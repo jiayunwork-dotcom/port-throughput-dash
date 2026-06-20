@@ -822,5 +822,5 @@ if __name__ == '__main__':
     print(f'{APP_TITLE}')
     print(f'启动地址: http://localhost:{APP_PORT}')
     print(f'=' * 70)
-    app.run_server(debug=True, host='0.0.0.0', port=APP_PORT)
+    app.run(debug=True, host='0.0.0.0', port=APP_PORT)
 
