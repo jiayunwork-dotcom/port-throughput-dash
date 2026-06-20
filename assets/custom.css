@@ -1,0 +1,168 @@
+/* 港口运营分析面板 - 自定义样式 */
+
+:root {
+  --primary-color: #1a365d;
+  --secondary-color: #2b6cb0;
+  --success-color: #38a169;
+  --warning-color: #d69e2e;
+  --danger-color: #e53e3e;
+  --info-color: #319795;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+  background-color: #f7fafc !important;
+  color: #2d3748;
+}
+
+.navbar-brand {
+  font-weight: 700 !important;
+  font-size: 1.15rem !important;
+  letter-spacing: 0.5px;
+}
+
+.nav-link {
+  font-weight: 500 !important;
+}
+
+h3, h4, h5, h6 {
+  color: #1a365d;
+  font-weight: 600;
+}
+
+.card {
+  border-radius: 0.5rem !important;
+  transition: box-shadow 0.2s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
+}
+
+.card-header {
+  font-weight: 600;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border-bottom: 1px solid #dee2e6 !important;
+}
+
+.border-0 {
+  border: none !important;
+}
+
+.shadow-sm {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+}
+
+.badge {
+  font-weight: 500;
+  padding: 0.5em 0.8em !important;
+  border-radius: 0.35rem !important;
+}
+
+.btn {
+  border-radius: 0.4rem !important;
+  font-weight: 500 !important;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.form-control, .Select-control, .form-select {
+  border-radius: 0.4rem !important;
+}
+
+.dash-table-container {
+  border-radius: 0.4rem !important;
+  overflow: hidden;
+}
+
+.dash-spreadsheet {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 0.4rem !important;
+}
+
+hr {
+  border-top: 1px solid #e2e8f0 !important;
+}
+
+.text-purple {
+  color: #805ad5 !important;
+}
+
+.fw-bold { font-weight: 700 !important; }
+.fw-500 { font-weight: 500 !important; }
+
+.Select-menu-outer {
+  z-index: 1000 !important;
+}
+
+.dbc .card {
+  border: 1px solid rgba(0, 0, 0, 0.075) !important;
+}
+
+.rc-slider-mark-text {
+  font-size: 0.75rem !important;
+  color: #718096 !important;
+}
+
+.rc-slider-track {
+  background-color: #3182ce !important;
+}
+
+.rc-slider-handle {
+  border: solid 2px #2b6cb0 !important;
+  background-color: #fff !important;
+}
+
+.alert {
+  border-radius: 0.4rem !important;
+  border: none !important;
+}
+
+input[type="file"] {
+  display: none;
+}
+
+.dash-graph {
+  border-radius: 0.4rem !important;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.loading-indicator {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+footer {
+  background-color: #fff;
+  border-top: 1px solid #e2e8f0;
+  margin-top: 2rem;
+}
+
+.js-plotly-plot .plotly .modebar {
+  opacity: 0.3 !important;
+  transition: opacity 0.2s ease;
+}
+
+.js-plotly-plot .plotly:hover .modebar {
+  opacity: 1 !important;
+}
+
+.dropdown-toggle::after {
+  vertical-align: 0.15em !important;
+}
+
+.container-fluid {
+  max-width: 1920px;
+}
