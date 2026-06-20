@@ -334,7 +334,7 @@ class LSTMPredictor:
         upper = inv_scale(upper)
 
         future_dates = pd.date_range(
-            start=self.train_dates.iloc[-1] + pd.Timedelta(days=1),
+            start=self.train_dates[-1] + pd.Timedelta(days=1),
             periods=steps,
             freq='D'
         )

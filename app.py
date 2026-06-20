@@ -20,6 +20,7 @@ from dash import dcc, html, Input, Output, State, callback_context, dash_table
 import dash_bootstrap_components as dbc
 from dash.dash_table.Format import Format, Scheme, Symbol
 
+from src import state as S
 from src.data_generator import load_port_data, PortDataGenerator
 from src.data_processor import DataPreprocessor
 from src.forecasting import ThroughputForecaster
@@ -32,34 +33,16 @@ from src.charts import ChartBuilder
 APP_TITLE = '港口集装箱吞吐量预测与堆场利用率优化分析平台'
 APP_PORT = 8050
 
-vessel_df, container_df, yard_df = None, None, None
-preprocessor = None
-daily_throughput = None
-yard_util_time = None
-forecast_results_cache = {}
-rehandling_results_cache = None
-overdue_cache = None
-kpi_cache = None
-
-
-def initialize_data(data_dir='data'):
-    """初始化数据"""
-    global vessel_df, container_df, yard_df, preprocessor
-    global daily_throughput, yard_util_time
-
-    print('正在加载数据...')
-    vessel_df, container_df, yard_df = load_port_data(data_dir)
-    preprocessor = DataPreprocessor(vessel_df, container_df, yard_df)
-    daily_throughput = preprocessor.get_daily_throughput()
-    yard_util_time = preprocessor.calculate_yard_utilization_time()
-    print(f'数据加载完成: {len(daily_throughput)} 天吞吐量记录')
-    return True
-
 
 try:
-    initialize_data()
+    ok, err = S.initialize('data')
+    if ok:
+        print(f'数据初始化成功: {S.get_summary()}')
+    else:
+        print(f'数据初始化失败: {err}')
+        traceback.print_exc()
 except Exception as e:
-    print(f'数据初始化失败: {e}')
+    print(f'数据初始化异常: {e}')
     traceback.print_exc()
 
 
@@ -305,7 +288,7 @@ def make_forecast_section():
 
 def make_yard_section():
     """创建堆场利用率分析模块"""
-    areas = yard_df['区域编号'].tolist() if yard_df is not None else []
+    areas = S.yard_df['区域编号'].tolist() if S.yard_df is not None else []
     return html.Div(id='yard', children=[
         html.H3([html.I(className='fas fa-warehouse me-2 text-primary'), '堆场利用率分析'],
                 className='mt-5 mb-3 border-bottom pb-2'),

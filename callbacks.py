@@ -1,10 +1,10 @@
 """
-Dash回调函数 - 处理所有交互逻辑（修复版）
+Dash回调函数 - 处理所有交互逻辑（修复版 v2）
 核心修复：
-1. 概览/KPI/图表：使用 Input('init-trigger', 'n_intervals') 强制初始加载
-2. 按钮回调：n_clicks is not None 替代 ctx.triggered_id 判断
-3. 堆场热力图：下拉/滑块变化立即响应
-4. 所有空判断前置，数据存在就正常渲染
+1. 统一使用 src.state 模块管理全局状态，解决跨模块变量不共享问题
+2. init-trigger 组件保证页面加载后自动触发所有初始渲染
+3. 所有回调加入异常捕获+打印，避免静默失败
+4. 按钮判断统一采用 n_clicks is not None and n_clicks > 0
 """
 
 import os
@@ -20,10 +20,12 @@ from datetime import datetime, timedelta
 
 import dash
 from dash import dcc, html, Input, Output, State, callback_context, dash_table, no_update
+from dash.dash_table.Format import Format, Scheme
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 
-from src.data_generator import load_port_data, PortDataGenerator
+from src import state as S
+from src.data_generator import PortDataGenerator
 from src.data_processor import DataPreprocessor
 from src.forecasting import ThroughputForecaster
 from src.rehandling import YardStackSimulator, OverdueBoxAnalyzer
@@ -51,12 +53,17 @@ def empty_figure(title='暂无数据，请先加载数据或运行相应模块')
     return fig
 
 
+def _debug(msg):
+    """调试打印 - 方便排查回调是否触发"""
+    print(f'[callback] {msg}', flush=True)
+
+
 def register_callbacks(app):
     """注册所有回调函数"""
 
     # =============================================
-    # 回调1: 更新概览区 + 吞吐量趋势图 + 堆场利用率趋势
-    # 触发时机：初始化(init-trigger) + 数据变化(app-data-store)
+    # 回调1: 概览区 + 吞吐量趋势图 + 堆场利用率趋势
+    # 触发: init-trigger (初始化) + app-data-store (数据变化)
     # =============================================
     @app.callback(
         Output('data-summary', 'children'),
@@ -75,13 +82,13 @@ def register_callbacks(app):
     )
     def update_overview(n_intervals, _store):
         """更新概览区数据 - 初始加载+数据变化时自动触发"""
-        global preprocessor, daily_throughput, yard_util_time
+        _debug(f'update_overview触发 n_intervals={n_intervals} initialized={S.is_initialized()}')
 
-        if preprocessor is None or daily_throughput is None or yard_util_time is None:
+        if not S.is_initialized():
             ef = empty_figure('系统初始化中，请稍候...')
             return (['数据加载中...'], ef, '-', '-', '-', '-', '', '', '', '', ef)
 
-        df = daily_throughput
+        df = S.daily_throughput
         total_in = int(df['进场箱量'].sum())
         total_out = int(df['出场箱量'].sum())
         total_teu = float(df['总TEU'].sum())
@@ -91,15 +98,15 @@ def register_callbacks(app):
         summary = [
             dbc.Badge([
                 html.I(className='fas fa-ship me-1'),
-                f'船舶靠泊记录: {len(preprocessor.vessel_df):,} 条'
+                f'船舶靠泊记录: {len(S.vessel_df):,} 条'
             ], color='primary', className='me-2 mb-2', style={'fontSize': '14px'}),
             dbc.Badge([
                 html.I(className='fas fa-box me-1'),
-                f'集装箱流转: {len(preprocessor.container_df):,} 条'
+                f'集装箱流转: {len(S.container_df):,} 条'
             ], color='success', className='me-2 mb-2', style={'fontSize': '14px'}),
             dbc.Badge([
                 html.I(className='fas fa-warehouse me-1'),
-                f'堆场区域: {len(preprocessor.yard_df)} 个'
+                f'堆场区域: {len(S.yard_df)} 个'
             ], color='info', className='me-2 mb-2', style={'fontSize': '14px'}),
             dbc.Badge([
                 html.I(className='fas fa-calendar me-1'),
@@ -108,7 +115,9 @@ def register_callbacks(app):
         ]
 
         throughput_fig = ChartBuilder.create_throughput_chart(df)
-        yard_util_fig = ChartBuilder.create_yard_utilization_chart(yard_util_time)
+        yard_util_fig = ChartBuilder.create_yard_utilization_chart(S.yard_util_time)
+
+        _debug(f'update_overview完成: {days}天数据, 总TEU {total_teu:,.0f}')
 
         return (
             summary, throughput_fig,
@@ -156,9 +165,7 @@ def register_callbacks(app):
     )
     def handle_upload_and_regenerate(v_c, c_c, y_c, regen_n, v_f, c_f, y_f):
         """处理数据上传和重新生成"""
-        global vessel_df, container_df, yard_df, preprocessor
-        global daily_throughput, yard_util_time, forecast_results_cache
-        global rehandling_results_cache, overdue_cache, kpi_cache
+        _debug(f'handle_upload_and_regenerate触发 regen_n={regen_n}')
 
         ctx = callback_context
         triggered = ctx.triggered_id
@@ -167,15 +174,17 @@ def register_callbacks(app):
         if triggered == 'regenerate-btn' and regen_n is not None and regen_n > 0:
             try:
                 gen = PortDataGenerator(seed=np.random.randint(1, 9999))
-                vessel_df, container_df, yard_df = gen.generate_all('data')
-                preprocessor = DataPreprocessor(vessel_df, container_df, yard_df)
-                daily_throughput = preprocessor.get_daily_throughput()
-                yard_util_time = preprocessor.calculate_yard_utilization_time()
-                forecast_results_cache.clear()
-                rehandling_results_cache = None
-                overdue_cache = None
-                kpi_cache = None
+                S.vessel_df, S.container_df, S.yard_df = gen.generate_all('data')
+                S.preprocessor = DataPreprocessor(S.vessel_df, S.container_df, S.yard_df)
+                S.daily_throughput = S.preprocessor.get_daily_throughput()
+                S.yard_util_time = S.preprocessor.calculate_yard_utilization_time()
+                S.forecast_results_cache.clear()
+                S.rehandling_results_cache = None
+                S.overdue_cache = None
+                S.kpi_cache = None
+                S.set_initialized(True)
                 new_store = {'regenerated': True, 'ts': datetime.now().isoformat()}
+                _debug('重新生成数据完成')
                 return ('✓ 使用新模拟数据', '✓ 使用新模拟数据', '✓ 使用新模拟数据', new_store)
             except Exception as e:
                 traceback.print_exc()
@@ -189,7 +198,7 @@ def register_callbacks(app):
             if v_c is not None and v_f:
                 df = _parse_upload(v_c, v_f)
                 if df is not None:
-                    vessel_df = df
+                    S.vessel_df = df
                     statuses[0] = f'✓ 已加载 {len(df)} 条记录'
                     changed = True
                 else:
@@ -201,7 +210,7 @@ def register_callbacks(app):
             if c_c is not None and c_f:
                 df = _parse_upload(c_c, c_f)
                 if df is not None:
-                    container_df = df
+                    S.container_df = df
                     statuses[1] = f'✓ 已加载 {len(df)} 条记录'
                     changed = True
                 else:
@@ -213,7 +222,7 @@ def register_callbacks(app):
             if y_c is not None and y_f:
                 df = _parse_upload(y_c, y_f)
                 if df is not None:
-                    yard_df = df
+                    S.yard_df = df
                     statuses[2] = f'✓ 已加载 {len(df)} 个区域'
                     changed = True
                 else:
@@ -222,16 +231,18 @@ def register_callbacks(app):
             statuses[2] = f'✗ {str(e)[:30]}'
 
         # 上传完成后重建预处理
-        if changed and vessel_df is not None and container_df is not None and yard_df is not None:
+        if changed and S.vessel_df is not None and S.container_df is not None and S.yard_df is not None:
             try:
-                preprocessor = DataPreprocessor(vessel_df, container_df, yard_df)
-                daily_throughput = preprocessor.get_daily_throughput()
-                yard_util_time = preprocessor.calculate_yard_utilization_time()
-                forecast_results_cache.clear()
-                rehandling_results_cache = None
-                overdue_cache = None
-                kpi_cache = None
+                S.preprocessor = DataPreprocessor(S.vessel_df, S.container_df, S.yard_df)
+                S.daily_throughput = S.preprocessor.get_daily_throughput()
+                S.yard_util_time = S.preprocessor.calculate_yard_utilization_time()
+                S.forecast_results_cache.clear()
+                S.rehandling_results_cache = None
+                S.overdue_cache = None
+                S.kpi_cache = None
+                S.set_initialized(True)
                 new_store = {'uploaded': True, 'ts': datetime.now().isoformat()}
+                _debug('上传数据并预处理完成')
                 return (statuses[0], statuses[1], statuses[2], new_store)
             except Exception as e:
                 traceback.print_exc()
@@ -257,82 +268,91 @@ def register_callbacks(app):
     )
     def run_forecast(n_clicks, algorithm, granularity, train_days, steps):
         """运行吞吐量预测"""
-        global preprocessor, forecast_results_cache
+        _debug(f'run_forecast触发 n_clicks={n_clicks}, algo={algorithm}')
 
         ef = empty_figure('点击"运行预测模型"按钮开始时序预测')
 
-        if preprocessor is None:
+        if not S.is_initialized():
             return ef, [], [], []
 
-        # --- 初始加载: 展示空占位 ---
+        # 初始加载: 展示空占位
         if n_clicks is None or n_clicks == 0:
             return ef, [], [], []
 
-        # --- 按钮点击: 执行预测 ---
-        results = {}
-        series = preprocessor.get_throughput_series(granularity=granularity, teu_mode=False)
+        # 按钮点击: 执行预测
+        try:
+            series = S.preprocessor.get_throughput_series(
+                granularity=granularity, teu_mode=False
+            )
 
-        algos = ['ARIMA', 'Prophet', 'LSTM'] if algorithm == 'ALL' else [algorithm]
+            algos = ['ARIMA', 'Prophet', 'LSTM'] if algorithm == 'ALL' else [algorithm]
+            results = {}
 
-        for algo in algos:
-            try:
-                forecaster = ThroughputForecaster(algorithm=algo)
-                forecaster.fit(series, train_days=train_days)
-                result = forecaster.forecast(steps=steps, confidence=0.8)
-                results[algo] = result
-            except Exception as e:
-                print(f'{algo} 预测失败: {e}')
-                traceback.print_exc()
-                results[algo] = {'error': str(e)}
+            for algo in algos:
+                try:
+                    forecaster = ThroughputForecaster(algorithm=algo)
+                    forecaster.fit(series, train_days=train_days)
+                    result = forecaster.forecast(steps=steps, confidence=0.8)
+                    results[algo] = result
+                    _debug(f'  {algo} 完成: MAPE={result.get("mape", "?")}')
+                except Exception as e:
+                    _debug(f'  {algo} 失败: {e}')
+                    traceback.print_exc()
+                    results[algo] = {'error': str(e)}
 
-        forecast_results_cache.update(results)
+            S.forecast_results_cache = results
 
-        fig = ChartBuilder.create_forecast_comparison(results)
+            fig = ChartBuilder.create_forecast_comparison(results)
 
-        cards = []
-        for algo, res in results.items():
-            if isinstance(res, dict) and 'error' not in res:
-                mape = res.get('mape', np.nan)
-                rmse = res.get('rmse', np.nan)
-                mape_str = f'{mape:.2f}%' if not np.isnan(mape) else '-'
-                rmse_str = f'{rmse:,.0f}' if not np.isnan(rmse) else '-'
+            cards = []
+            for algo, res in results.items():
+                if isinstance(res, dict) and 'error' not in res:
+                    mape = res.get('mape', np.nan)
+                    rmse = res.get('rmse', np.nan)
+                    mape_str = f'{mape:.2f}%' if not np.isnan(mape) else '-'
+                    rmse_str = f'{rmse:,.0f}' if not np.isnan(rmse) else '-'
 
-                if not np.isnan(mape) and mape < 10:
-                    color = 'success'
-                elif not np.isnan(mape) and mape < 20:
-                    color = 'warning'
-                else:
-                    color = 'danger'
+                    if not np.isnan(mape) and mape < 10:
+                        color = 'success'
+                    elif not np.isnan(mape) and mape < 20:
+                        color = 'warning'
+                    else:
+                        color = 'danger'
 
-                cards.append(dbc.Col(dbc.Card([
-                    dbc.CardBody([
-                        html.Div([
-                            html.Span(algo, className='fw-bold'),
-                            dbc.Badge('MAPE', color=color,
-                                      className='float-end', pill=True)
-                        ], className='mb-2'),
-                        html.Div([
-                            html.Span(mape_str,
-                                      className=f'text-{color} fw-bold',
-                                      style={'fontSize': '28px'})
-                        ]),
-                        html.Small(f'RMSE: {rmse_str} 箱', className='text-muted'),
-                        html.Br(),
-                        html.Small('平均绝对百分比误差', className='text-muted')
-                    ])
-                ], className='shadow-sm'), md=3))
+                    cards.append(dbc.Col(dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.Span(algo, className='fw-bold'),
+                                dbc.Badge('MAPE', color=color,
+                                          className='float-end', pill=True)
+                            ], className='mb-2'),
+                            html.Div([
+                                html.Span(mape_str,
+                                          className=f'text-{color} fw-bold',
+                                          style={'fontSize': '28px'})
+                            ]),
+                            html.Small(f'RMSE: {rmse_str} 箱', className='text-muted'),
+                            html.Br(),
+                            html.Small('平均绝对百分比误差', className='text-muted')
+                        ])
+                    ], className='shadow-sm'), md=3))
 
-        residuals_figs = []
-        for algo, res in results.items():
-            if isinstance(res, dict) and 'residuals' in res:
-                rfig = ChartBuilder.create_residual_histogram(res.get('residuals'), algo)
-                residuals_figs.append(dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([dcc.Graph(figure=rfig)])
-                    ], className='shadow-sm')
-                ], md=4))
+            residuals_figs = []
+            for algo, res in results.items():
+                if isinstance(res, dict) and 'residuals' in res:
+                    rfig = ChartBuilder.create_residual_histogram(res.get('residuals'), algo)
+                    residuals_figs.append(dbc.Col([
+                        dbc.Card([
+                            dbc.CardBody([dcc.Graph(figure=rfig)])
+                        ], className='shadow-sm')
+                    ], md=4))
 
-        return fig, cards, residuals_figs, []
+            _debug(f'预测完成: {len(results)} 个算法')
+            return fig, cards, residuals_figs, []
+
+        except Exception as e:
+            traceback.print_exc()
+            return empty_figure(f'预测失败: {str(e)[:50]}'), [], [], []
 
     # =============================================
     # 回调4: 堆场热力图 - 切换区域+拖动滑块立即响应
@@ -348,90 +368,101 @@ def register_callbacks(app):
     )
     def update_yard_heatmap(area_id, slider_val, n_intervals):
         """更新堆场热力图 - 下拉/滑块变化立即响应"""
-        global preprocessor, container_df, yard_df
+        _debug(f'update_yard_heatmap触发 area={area_id}, slider={slider_val}, '
+               f'n_intervals={n_intervals}, init={S.is_initialized()}')
 
         ef = empty_figure('请选择堆场区域并稍候')
 
-        if preprocessor is None or area_id is None or yard_df is None:
+        if not S.is_initialized() or area_id is None:
             return ef, '-', [], []
 
-        date_min = pd.to_datetime(container_df['进场时间'].min())
-        date_max = pd.to_datetime(container_df['出场时间'].max())
-        total_seconds = (date_max - date_min).total_seconds()
+        try:
+            date_min = pd.to_datetime(S.container_df['进场时间'].min())
+            date_max = pd.to_datetime(S.container_df['出场时间'].max())
+            total_seconds = (date_max - date_min).total_seconds()
 
-        if slider_val is None:
-            slider_val = 50
-        if total_seconds <= 0:
-            total_seconds = 1
+            if slider_val is None:
+                slider_val = 50
+            if total_seconds <= 0:
+                total_seconds = 1
 
-        target_ts = date_min + timedelta(seconds=total_seconds * (slider_val / 100))
+            target_ts = date_min + timedelta(seconds=total_seconds * (slider_val / 100))
 
-        snapshot = preprocessor.get_yard_snapshot(target_ts)
-        heatmap, bay_labels, row_labels = preprocessor.build_heatmap_data(snapshot, area_id)
+            snapshot = S.preprocessor.get_yard_snapshot(target_ts)
+            heatmap, bay_labels, row_labels = S.preprocessor.build_heatmap_data(
+                snapshot, area_id
+            )
 
-        yard_row = yard_df[yard_df['区域编号'] == area_id]
-        if len(yard_row) == 0:
-            return ef, str(target_ts), [], []
+            yard_row = S.yard_df[S.yard_df['区域编号'] == area_id]
+            if len(yard_row) == 0:
+                return ef, str(target_ts), [], []
 
-        yr = yard_row.iloc[0]
-        max_tiers = int(yr['最大堆叠层数'])
-        area_snap = snapshot[snapshot['堆场区域'] == area_id]
-        total_boxes = len(area_snap)
-        cap = int(yr['贝位数量']) * int(yr['列数']) * max_tiers
-        util = total_boxes / cap * 100 if cap > 0 else 0
+            yr = yard_row.iloc[0]
+            max_tiers = int(yr['最大堆叠层数'])
+            area_snap = snapshot[snapshot['堆场区域'] == area_id]
+            total_boxes = len(area_snap)
+            cap = int(yr['贝位数量']) * int(yr['列数']) * max_tiers
+            util = total_boxes / cap * 100 if cap > 0 else 0
 
-        heavy = len(area_snap[area_snap['状态'] == '重箱'])
-        empty_cnt = len(area_snap[area_snap['状态'] == '空箱'])
-        reefer = len(area_snap[area_snap['状态'] == '冷藏'])
-        danger = len(area_snap[area_snap['状态'] == '危品'])
+            heavy = len(area_snap[area_snap['状态'] == '重箱'])
+            empty_cnt = len(area_snap[area_snap['状态'] == '空箱'])
+            reefer = len(area_snap[area_snap['状态'] == '冷藏'])
+            danger = len(area_snap[area_snap['状态'] == '危品'])
 
-        fig = ChartBuilder.create_yard_heatmap(heatmap, bay_labels, row_labels, max_tiers, area_id)
-        time_str = target_ts.strftime('%Y-%m-%d %H:%M') + f' (进度{slider_val}%)'
+            fig = ChartBuilder.create_yard_heatmap(
+                heatmap, bay_labels, row_labels, max_tiers, area_id
+            )
+            time_str = target_ts.strftime('%Y-%m-%d %H:%M') + f' (进度{slider_val}%)'
 
-        stats = html.Div([
-            dbc.Row([
-                dbc.Col([
-                    html.Small('占用箱数', className='text-muted'),
-                    html.H6(f'{total_boxes:,}', className='fw-bold text-primary')
-                ]),
-                dbc.Col([
-                    html.Small('占用率', className='text-muted'),
-                    html.H6(f'{util:.1f}%', className='fw-bold text-success')
-                ]),
-            ], className='mb-2'),
-            html.Hr(className='my-2'),
-            dbc.Row([
-                dbc.Col([
-                    html.Small('重箱', className='text-muted'),
-                    html.H6(f'{heavy}', className='text-secondary')
-                ]),
-                dbc.Col([
-                    html.Small('空箱', className='text-muted'),
-                    html.H6(f'{empty_cnt}', className='text-secondary')
-                ]),
-            ], className='mb-1'),
-            dbc.Row([
-                dbc.Col([
-                    html.Small('冷藏', className='text-muted'),
-                    html.H6(f'{reefer}', className='text-info')
-                ]),
-                dbc.Col([
-                    html.Small('危品', className='text-muted'),
-                    html.H6(f'{danger}', className='text-danger')
-                ]),
+            stats = html.Div([
+                dbc.Row([
+                    dbc.Col([
+                        html.Small('占用箱数', className='text-muted'),
+                        html.H6(f'{total_boxes:,}', className='fw-bold text-primary')
+                    ]),
+                    dbc.Col([
+                        html.Small('占用率', className='text-muted'),
+                        html.H6(f'{util:.1f}%', className='fw-bold text-success')
+                    ]),
+                ], className='mb-2'),
+                html.Hr(className='my-2'),
+                dbc.Row([
+                    dbc.Col([
+                        html.Small('重箱', className='text-muted'),
+                        html.H6(f'{heavy}', className='text-secondary')
+                    ]),
+                    dbc.Col([
+                        html.Small('空箱', className='text-muted'),
+                        html.H6(f'{empty_cnt}', className='text-secondary')
+                    ]),
+                ], className='mb-1'),
+                dbc.Row([
+                    dbc.Col([
+                        html.Small('冷藏', className='text-muted'),
+                        html.H6(f'{reefer}', className='text-info')
+                    ]),
+                    dbc.Col([
+                        html.Small('危品', className='text-muted'),
+                        html.H6(f'{danger}', className='text-danger')
+                    ]),
+                ])
             ])
-        ])
 
-        area_info = [
-            {'属性': '区域编号', '值': area_id},
-            {'属性': '贝位数量', '值': f"{int(yr['贝位数量'])} 个"},
-            {'属性': '列数', '值': f"{int(yr['列数'])} 列"},
-            {'属性': '最大层数', '值': f"{max_tiers} 层"},
-            {'属性': '总容量', '值': f"{cap:,} 箱"},
-            {'属性': '当前占用', '值': f'{util:.1f}%'},
-        ]
+            area_info = [
+                {'属性': '区域编号', '值': area_id},
+                {'属性': '贝位数量', '值': f"{int(yr['贝位数量'])} 个"},
+                {'属性': '列数', '值': f"{int(yr['列数'])} 列"},
+                {'属性': '最大层数', '值': f"{max_tiers} 层"},
+                {'属性': '总容量', '值': f"{cap:,} 箱"},
+                {'属性': '当前占用', '值': f'{util:.1f}%'},
+            ]
 
-        return fig, time_str, stats, area_info
+            _debug(f'热力图完成: {area_id} {total_boxes}箱 {util:.1f}%')
+            return fig, time_str, stats, area_info
+
+        except Exception as e:
+            traceback.print_exc()
+            return empty_figure(f'热力图生成失败: {str(e)[:50]}'), '-', [], []
 
     # =============================================
     # 回调5: 超期箱分析
@@ -451,13 +482,16 @@ def register_callbacks(app):
     )
     def update_overdue_analysis(n_clicks, n_intervals, free_days):
         """更新超期箱分析 - 初始化(默认5天)+按钮点击"""
-        global preprocessor, overdue_cache
+        _debug(f'update_overdue_analysis触发 n_clicks={n_clicks}, '
+               f'n_intervals={n_intervals}, init={S.is_initialized()}')
 
         ef_cust = empty_figure('点击"计算超期箱"或稍候自动加载')
         ef_area = empty_figure('点击"计算超期箱"或稍候自动加载')
-        default_cards = dbc.Alert('数据加载中，或点击上方"计算超期箱"按钮', color='secondary')
+        default_cards = dbc.Alert(
+            '数据加载中，或点击上方"计算超期箱"按钮', color='secondary'
+        )
 
-        if preprocessor is None:
+        if not S.is_initialized():
             return default_cards, ef_cust, ef_area, [], [], [], []
 
         # 初始加载自动跑一次 (默认5天)
@@ -470,9 +504,11 @@ def register_callbacks(app):
         try:
             free_days = int(free_days) if free_days else 5
             analyzer = OverdueBoxAnalyzer(free_days=free_days)
-            overdue_df, by_customer, by_area, by_route = analyzer.analyze(preprocessor.container_df)
-            overdue_cache = {'df': overdue_df, 'customer': by_customer,
-                             'area': by_area, 'free_days': free_days}
+            overdue_df, by_customer, by_area, by_route = analyzer.analyze(S.container_df)
+            S.overdue_cache = {
+                'df': overdue_df, 'customer': by_customer,
+                'area': by_area, 'free_days': free_days
+            }
 
             total_overdue = len(overdue_df)
             total_fee = overdue_df['滞箱费用'].sum()
@@ -498,7 +534,7 @@ def register_callbacks(app):
                         html.Small('平均超期天数', className='text-muted'),
                         html.H4(f'{avg_overdue_days:.1f} 天', className='fw-bold text-info'),
                         html.Small(
-                            f'超期比例 {total_overdue/len(preprocessor.container_df)*100:.1f}%',
+                            f'超期比例 {total_overdue/len(S.container_df)*100:.1f}%',
                             className='text-muted'
                         )
                     ])
@@ -517,23 +553,24 @@ def register_callbacks(app):
             cust_cols = [
                 {'name': '客户名称', 'id': '客户'},
                 {'name': '超期箱数', 'id': '超期箱数量',
-                 'type': 'numeric', 'format': dash_table.Format(group=',')},
+                 'type': 'numeric', 'format': Format(group=',')},
                 {'name': '平均超期天', 'id': '平均超期天数',
-                 'format': dash_table.Format(precision=1, scheme=dash_table.Format.Scheme.fixed)},
+                 'format': Format(precision=1, scheme=Scheme.fixed)},
                 {'name': '预估滞箱费', 'id': '预估滞箱费用',
-                 'type': 'numeric', 'format': dash_table.Format(group=',', precision=0)},
+                 'type': 'numeric', 'format': Format(group=',', precision=0)},
             ]
 
             area_cols = [
                 {'name': '堆场区域', 'id': '堆场区域'},
                 {'name': '超期箱数', 'id': '超期箱数量',
-                 'type': 'numeric', 'format': dash_table.Format(group=',')},
+                 'type': 'numeric', 'format': Format(group=',')},
                 {'name': '平均超期天', 'id': '平均超期天数',
-                 'format': dash_table.Format(precision=1, scheme=dash_table.Format.Scheme.fixed)},
+                 'format': Format(precision=1, scheme=Scheme.fixed)},
                 {'name': '预估滞箱费', 'id': '预估滞箱费用',
-                 'type': 'numeric', 'format': dash_table.Format(group=',', precision=0)},
+                 'type': 'numeric', 'format': Format(group=',', precision=0)},
             ]
 
+            _debug(f'超期箱分析完成: {total_overdue}个, ¥{total_fee:,.0f}')
             return (cards, cust_chart, area_chart,
                     by_customer.to_dict('records'), cust_cols,
                     by_area.to_dict('records'), area_cols)
@@ -549,7 +586,9 @@ def register_callbacks(app):
         """格式化翻箱率结果（内部函数）"""
         fig = ChartBuilder.create_rehandling_comparison(result_df)
 
-        strategy_order = ['策略A-随机堆放', '策略B-按提箱时间排序', '策略C-按航线聚堆']
+        strategy_order = [
+            '策略A-随机堆放', '策略B-按提箱时间排序', '策略C-按航线聚堆'
+        ]
         strat_avg = result_df.groupby('策略').agg(
             平均翻箱率=('平均翻箱率', 'mean'),
             P95翻箱率=('P95翻箱率', 'mean')
@@ -567,13 +606,13 @@ def register_callbacks(app):
             {'name': '区域', 'id': '区域'},
             {'name': '策略', 'id': '策略'},
             {'name': '平均翻箱率', 'id': '平均翻箱率',
-             'format': dash_table.Format(precision=4, scheme=dash_table.Format.Scheme.percent)},
+             'format': Format(precision=4, scheme=Scheme.percent)},
             {'name': 'P95翻箱率', 'id': 'P95翻箱率',
-             'format': dash_table.Format(precision=4, scheme=dash_table.Format.Scheme.percent)},
+             'format': Format(precision=4, scheme=Scheme.percent)},
             {'name': '总提箱次数', 'id': '总提箱次数',
-             'type': 'numeric', 'format': dash_table.Format(group=',')},
+             'type': 'numeric', 'format': Format(group=',')},
             {'name': '总翻箱次数', 'id': '总翻箱次数',
-             'type': 'numeric', 'format': dash_table.Format(group=',')},
+             'type': 'numeric', 'format': Format(group=',')},
         ]
 
         return (fig, result_df.to_dict('records'), cols, [], *vals)
@@ -592,65 +631,58 @@ def register_callbacks(app):
         Output('strat-b-p95', 'children'),
         Output('strat-c-avg', 'children'),
         Output('strat-c-p95', 'children'),
-        [Input('run-simulation-btn', 'n_clicks'),
-         Input('init-trigger', 'n_intervals')],
+        [Input('run-simulation-btn', 'n_clicks')],
         [State('sim-count', 'value'), State('fill-ratio', 'value')],
         prevent_initial_call=False
     )
-    def run_rehandling_simulation(n_clicks, n_intervals, sim_count, fill_ratio):
+    def run_rehandling_simulation(n_clicks, sim_count, fill_ratio):
         """运行翻箱率蒙特卡洛模拟"""
-        global preprocessor, yard_df, rehandling_results_cache
+        _debug(f'run_rehandling_simulation触发 n_clicks={n_clicks}')
 
-        ef = empty_figure('点击"运行蒙特卡洛模拟"或稍候自动加载（首次需数分钟）')
+        ef = empty_figure(
+            '点击"运行蒙特卡洛模拟"开始分析（首次需数分钟）'
+        )
         dashes = ['-'] * 6
 
-        if preprocessor is None or yard_df is None:
+        if not S.is_initialized():
             return (ef, [], [], [], *dashes)
 
-        run_auto = (n_intervals is not None and n_intervals > 0 and n_clicks is None
-                    and rehandling_results_cache is not None)
-        run_click = (n_clicks is not None and n_clicks > 0)
-
-        # 初始: 若有缓存就展示缓存; 无缓存则显示"请点击运行"
-        if not run_auto and not run_click:
-            if rehandling_results_cache is not None:
-                return _format_rehandling_results(rehandling_results_cache)
+        # 初始加载: 显示提示
+        if n_clicks is None or n_clicks == 0:
+            if S.rehandling_results_cache is not None:
+                return _format_rehandling_results(S.rehandling_results_cache)
             return (ef, [], [], [], *dashes)
 
         # 点击运行: 执行模拟
-        if run_click:
-            try:
-                simulator = YardStackSimulator(
-                    yard_df, num_simulations=sim_count or 1000,
-                    seed=np.random.randint(1, 9999)
+        try:
+            simulator = YardStackSimulator(
+                S.yard_df, num_simulations=sim_count or 1000,
+                seed=np.random.randint(1, 9999)
+            )
+            all_results = []
+            # 模拟前4个代表性区域（缩短时间）
+            areas = S.yard_df['区域编号'].tolist()[:4]
+            for area_id in areas:
+                area_results = simulator.run_single_area_simulation(
+                    area_id, fill_ratio=fill_ratio or 0.7
                 )
-                all_results = []
-                # 模拟2个代表性区域即可（缩短时间）
-                for area_id in yard_df['区域编号'].tolist()[:4]:
-                    area_results = simulator.run_single_area_simulation(
-                        area_id, fill_ratio=fill_ratio or 0.7
-                    )
-                    for strategy, result in area_results.items():
-                        all_results.append({
-                            '区域': area_id,
-                            '策略': strategy,
-                            '平均翻箱率': result.avg_relocation_rate,
-                            'P95翻箱率': result.p95_relocation_rate,
-                            '总提箱次数': result.total_pickups,
-                            '总翻箱次数': result.total_relocations
-                        })
-                result_df = pd.DataFrame(all_results)
-                rehandling_results_cache = result_df
-                return _format_rehandling_results(result_df)
-            except Exception as e:
-                traceback.print_exc()
-                return (empty_figure(f'模拟失败: {str(e)[:50]}'), [], [], [], *dashes)
+                for strategy, result in area_results.items():
+                    all_results.append({
+                        '区域': area_id,
+                        '策略': strategy,
+                        '平均翻箱率': result.avg_relocation_rate,
+                        'P95翻箱率': result.p95_relocation_rate,
+                        '总提箱次数': result.total_pickups,
+                        '总翻箱次数': result.total_relocations
+                    })
 
-        # 自动加载缓存
-        if run_auto and rehandling_results_cache is not None:
-            return _format_rehandling_results(rehandling_results_cache)
-
-        return (ef, [], [], [], *dashes)
+            result_df = pd.DataFrame(all_results)
+            S.rehandling_results_cache = result_df
+            _debug(f'翻箱率模拟完成: {len(result_df)} 条记录')
+            return _format_rehandling_results(result_df)
+        except Exception as e:
+            traceback.print_exc()
+            return (empty_figure(f'模拟失败: {str(e)[:50]}'), [], [], [], *dashes)
 
     # =============================================
     # 回调7: KPI仪表板 (初始加载自动跑)
@@ -671,20 +703,21 @@ def register_callbacks(app):
     )
     def update_kpi_dashboard(granularity, n_intervals):
         """更新KPI仪表板 - 初始化+切换粒度自动更新"""
-        global preprocessor, kpi_cache
+        _debug(f'update_kpi_dashboard触发 granularity={granularity}, '
+               f'n_intervals={n_intervals}, init={S.is_initialized()}')
 
         ef = empty_figure('KPI数据加载中...')
         dashes = ['-'] * 8
 
-        if preprocessor is None:
+        if not S.is_initialized():
             return (*dashes, ef)
 
         if granularity is None:
             granularity = '日'
 
         try:
-            kpi_data = preprocessor.calculate_kpis(granularity=granularity)
-            kpi_cache = kpi_data
+            kpi_data = S.preprocessor.calculate_kpis(granularity=granularity)
+            S.kpi_cache = kpi_data
             df = kpi_data.get('综合KPI', pd.DataFrame())
             if df.empty:
                 return (*dashes, ef)
@@ -717,6 +750,7 @@ def register_callbacks(app):
 
             kpi_fig = ChartBuilder.create_kpi_trend_chart(df)
 
+            _debug(f'KPI计算完成: 船时{ship_eff:.1f}, 泊位{berth_util*100:.1f}%')
             return (
                 f'{ship_eff:.1f}' if not pd.isna(ship_eff) else '-',
                 f'{crane_eff:.2f}' if not pd.isna(crane_eff) else '-',
@@ -753,11 +787,11 @@ def register_callbacks(app):
     )
     def run_whatif_analysis(n1, n2, n3, n_all, growth, bays, rows, tiers, reduce_days):
         """运行What-if情景分析"""
-        global preprocessor
+        _debug(f'run_whatif_analysis触发 n1={n1} n2={n2} n3={n3} n_all={n_all}')
 
         ef = empty_figure('点击下方任意"运行"按钮，或点击"一键运行全部"')
 
-        if preprocessor is None:
+        if not S.is_initialized():
             return ef, [], [], []
 
         ctx = callback_context
@@ -768,7 +802,7 @@ def register_callbacks(app):
             return ef, [], [], []
 
         try:
-            scenario = WhatIfScenario(preprocessor)
+            scenario = WhatIfScenario(S.preprocessor)
             results = []
 
             if triggered in ['run-whatif-1', 'run-whatif-all']:
@@ -786,12 +820,10 @@ def register_callbacks(app):
 
             # 一键运行全部: 额外加完整组合
             if triggered == 'run-whatif-all':
-                for g in [0.1, 0.2, 0.3]:
-                    if g != (growth or 0.2):
-                        results.append(scenario.scenario_throughput_growth(g))
-                for d in [1, 2, 3]:
-                    if d != (reduce_i if 'reduce_i' in dir() else 0):
-                        results.append(scenario.scenario_reduce_storage_days(d))
+                for g in [0.1, 0.3]:
+                    results.append(scenario.scenario_throughput_growth(g))
+                for d in [1, 3]:
+                    results.append(scenario.scenario_reduce_storage_days(d))
 
             if not results:
                 return ef, [], [], []
@@ -804,11 +836,14 @@ def register_callbacks(app):
                 n = c['name']
                 if any(k in n for k in ['利用率', '比例', '幅度', '增长率']):
                     c['type'] = 'numeric'
-                    c['format'] = dash_table.Format(precision=2, scheme=dash_table.Format.Scheme.percent)
+                    c['format'] = Format(
+                        precision=2, scheme=Scheme.percent
+                    )
                 elif any(k in n for k in ['费用', '容量', '数量', '天数']):
                     c['type'] = 'numeric'
-                    c['format'] = dash_table.Format(group=',', precision=0)
+                    c['format'] = Format(group=',', precision=0)
 
+            _debug(f'What-if分析完成: {len(results)} 个情景')
             return fig, result_df.to_dict('records'), cols, []
         except Exception as e:
             traceback.print_exc()
@@ -825,64 +860,78 @@ def register_callbacks(app):
     )
     def export_pdf_report(n_clicks):
         """导出PDF运营分析报告"""
-        global preprocessor, daily_throughput, yard_util_time
-        global forecast_results_cache, rehandling_results_cache
-        global overdue_cache, kpi_cache
+        _debug(f'export_pdf_report触发 n_clicks={n_clicks}')
 
         if n_clicks is None or n_clicks == 0:
             return None, ''
 
-        if preprocessor is None:
+        if not S.is_initialized():
             return None, html.Span('✗ 暂无数据可导出', className='text-danger')
 
         try:
+            os.makedirs('reports', exist_ok=True)
             generator = PortReportGenerator('reports')
-            start_date = daily_throughput['日期'].min()
-            end_date = daily_throughput['日期'].max()
+            start_date = S.daily_throughput['日期'].min()
+            end_date = S.daily_throughput['日期'].max()
 
-            by_customer = overdue_cache['customer'] if overdue_cache else pd.DataFrame()
-            by_area = overdue_cache['area'] if overdue_cache else pd.DataFrame()
-            rehandling_df = rehandling_results_cache if rehandling_results_cache is not None else pd.DataFrame()
+            by_customer = S.overdue_cache['customer'] if S.overdue_cache else pd.DataFrame()
+            by_area = S.overdue_cache['area'] if S.overdue_cache else pd.DataFrame()
+            rehandling_df = (
+                S.rehandling_results_cache
+                if S.rehandling_results_cache is not None
+                else pd.DataFrame()
+            )
 
             whatif_df = pd.DataFrame()
             try:
-                scenario = WhatIfScenario(preprocessor)
+                scenario = WhatIfScenario(S.preprocessor)
                 whatif_df = scenario.run_all_scenarios()
             except Exception:
                 pass
 
             figures = {}
             try:
-                figures['throughput_chart'] = ChartBuilder.create_throughput_chart(daily_throughput)
+                figures['throughput_chart'] = (
+                    ChartBuilder.create_throughput_chart(S.daily_throughput)
+                )
             except Exception:
                 pass
             try:
-                figures['forecast_chart'] = ChartBuilder.create_forecast_comparison(forecast_results_cache or {})
+                figures['forecast_chart'] = (
+                    ChartBuilder.create_forecast_comparison(
+                        S.forecast_results_cache or {}
+                    )
+                )
             except Exception:
                 pass
             try:
-                figures['yard_util_chart'] = ChartBuilder.create_yard_utilization_chart(yard_util_time)
+                figures['yard_util_chart'] = (
+                    ChartBuilder.create_yard_utilization_chart(S.yard_util_time)
+                )
             except Exception:
                 pass
             try:
-                figures['rehandling_chart'] = ChartBuilder.create_rehandling_comparison(rehandling_df)
+                figures['rehandling_chart'] = (
+                    ChartBuilder.create_rehandling_comparison(rehandling_df)
+                )
             except Exception:
                 pass
 
             filepath = generator.generate_report(
                 report_name='港口运营分析',
                 start_date=start_date, end_date=end_date,
-                daily_throughput=daily_throughput,
-                forecast_results=forecast_results_cache or {},
-                yard_util=yard_util_time,
+                daily_throughput=S.daily_throughput,
+                forecast_results=S.forecast_results_cache or {},
+                yard_util=S.yard_util_time,
                 rehandling_results=rehandling_df,
                 overdue_by_customer=by_customer,
                 overdue_by_area=by_area,
-                kpi_data=kpi_cache or preprocessor.calculate_kpis('日'),
+                kpi_data=S.kpi_cache or S.preprocessor.calculate_kpis('日'),
                 whatif_results=whatif_df,
                 figures=figures
             )
 
+            _debug(f'PDF报告生成: {filepath}')
             return (dcc.send_file(filepath),
                     html.Span([
                         html.I(className='fas fa-check-circle me-1 text-success'),
@@ -890,4 +939,6 @@ def register_callbacks(app):
                     ], className='text-success fw-bold'))
         except Exception as e:
             traceback.print_exc()
-            return None, html.Span(f'✗ 导出失败: {str(e)[:60]}', className='text-danger')
+            return None, html.Span(
+                f'✗ 导出失败: {str(e)[:60]}', className='text-danger'
+            )
