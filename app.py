@@ -801,7 +801,8 @@ def make_footer():
 
 app.layout = html.Div([
     make_header(),
-    dcc.Store(id='app-data-store'),
+    dcc.Store(id='app-data-store', data={'initialized': True}),
+    dcc.Interval(id='init-trigger', interval=500, max_intervals=1, n_intervals=0),
     dbc.Container([
         make_data_upload_section(),
         make_overview_section(),
