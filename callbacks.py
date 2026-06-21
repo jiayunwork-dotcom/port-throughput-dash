@@ -570,10 +570,24 @@ def register_callbacks(app):
                  'type': 'numeric', 'format': Format(group=',', precision=0)},
             ]
 
+            cust_records = by_customer.copy()
+            if '平均超期天数' in cust_records.columns:
+                cust_records['平均超期天数'] = cust_records['平均超期天数'].apply(lambda v: round(float(v), 1))
+            if '平均堆存天数' in cust_records.columns:
+                cust_records['平均堆存天数'] = cust_records['平均堆存天数'].apply(lambda v: round(float(v), 1))
+            if '预估滞箱费用' in cust_records.columns:
+                cust_records['预估滞箱费用'] = cust_records['预估滞箱费用'].apply(lambda v: int(round(float(v), 0)))
+
+            area_records = by_area.copy()
+            if '平均超期天数' in area_records.columns:
+                area_records['平均超期天数'] = area_records['平均超期天数'].apply(lambda v: round(float(v), 1))
+            if '预估滞箱费用' in area_records.columns:
+                area_records['预估滞箱费用'] = area_records['预估滞箱费用'].apply(lambda v: int(round(float(v), 0)))
+
             _debug(f'超期箱分析完成: {total_overdue}个, ¥{total_fee:,.0f}')
             return (cards, cust_chart, area_chart,
-                    by_customer.to_dict('records'), cust_cols,
-                    by_area.to_dict('records'), area_cols)
+                    cust_records.to_dict('records'), cust_cols,
+                    area_records.to_dict('records'), area_cols)
         except Exception as e:
             traceback.print_exc()
             return (dbc.Alert(f'计算失败: {str(e)[:60]}', color='danger'),
@@ -584,38 +598,69 @@ def register_callbacks(app):
     # =============================================
     def _format_rehandling_results(result_df):
         """格式化翻箱率结果（内部函数）"""
-        fig = ChartBuilder.create_rehandling_comparison(result_df)
+        _debug(f'  _format_rehandling_results 输入: {len(result_df)} 行, 列={list(result_df.columns)}')
+
+        if result_df.empty:
+            _debug('  ⚠️ result_df 为空！')
+            ef = empty_figure('模拟结果为空，请重试')
+            return (ef, [], [], [], *(['-'] * 6))
+
+        try:
+            fig = ChartBuilder.create_rehandling_comparison(result_df)
+        except Exception as e:
+            _debug(f'  ⚠️ 图表生成失败: {e}')
+            fig = empty_figure(f'图表生成失败: {str(e)[:40]}')
 
         strategy_order = [
             '策略A-随机堆放', '策略B-按提箱时间排序', '策略C-按航线聚堆'
         ]
-        strat_avg = result_df.groupby('策略').agg(
-            平均翻箱率=('平均翻箱率', 'mean'),
-            P95翻箱率=('P95翻箱率', 'mean')
-        )
+
+        try:
+            strat_avg = result_df.groupby('策略').agg(
+                平均翻箱率=('平均翻箱率', 'mean'),
+                P95翻箱率=('P95翻箱率', 'mean')
+            )
+            _debug(f'  分组后策略: {list(strat_avg.index)}')
+            _debug(f'  分组值:\n{strat_avg}')
+        except Exception as e:
+            _debug(f'  ⚠️ 分组聚合失败: {e}')
+            return (fig, result_df.to_dict('records'), [], [], *(['-'] * 6))
 
         vals = []
         for s in strategy_order:
             if s in strat_avg.index:
-                vals.append(f'{strat_avg.loc[s, "平均翻箱率"]*100:.2f}%')
-                vals.append(f'{strat_avg.loc[s, "P95翻箱率"]*100:.2f}%')
+                avg_val = float(strat_avg.loc[s, '平均翻箱率']) * 100
+                p95_val = float(strat_avg.loc[s, 'P95翻箱率']) * 100
+                vals.append(f'{avg_val:.2f}%')
+                vals.append(f'{p95_val:.2f}%')
+                _debug(f'  策略[{s}] avg={avg_val:.4f}%, p95={p95_val:.4f}%')
             else:
                 vals += ['-', '-']
+                _debug(f'  策略[{s}] 未找到！')
 
         cols = [
             {'name': '区域', 'id': '区域'},
             {'name': '策略', 'id': '策略'},
-            {'name': '平均翻箱率', 'id': '平均翻箱率',
-             'format': Format(precision=4, scheme=Scheme.percent)},
-            {'name': 'P95翻箱率', 'id': 'P95翻箱率',
-             'format': Format(precision=4, scheme=Scheme.percent)},
+            {'name': '平均翻箱率(倍)', 'id': '平均翻箱率',
+             'type': 'numeric', 'format': Format(precision=2, scheme=Scheme.fixed)},
+            {'name': 'P95翻箱率(倍)', 'id': 'P95翻箱率',
+             'type': 'numeric', 'format': Format(precision=2, scheme=Scheme.fixed)},
             {'name': '总提箱次数', 'id': '总提箱次数',
              'type': 'numeric', 'format': Format(group=',')},
             {'name': '总翻箱次数', 'id': '总翻箱次数',
              'type': 'numeric', 'format': Format(group=',')},
         ]
 
-        return (fig, result_df.to_dict('records'), cols, [], *vals)
+        detail_records = result_df.copy()
+        for c in ['平均翻箱率', 'P95翻箱率']:
+            if c in detail_records.columns:
+                detail_records[c] = detail_records[c].apply(lambda v: round(float(v), 2))
+        for c in ['总提箱次数', '总翻箱次数']:
+            if c in detail_records.columns:
+                detail_records[c] = detail_records[c].apply(lambda v: int(round(float(v), 0)))
+
+        _debug(f'  最终卡片值: {vals}')
+        return (fig, detail_records.to_dict('records'), cols, [], *vals)
 
     # =============================================
     # 回调6: 翻箱率蒙特卡洛模拟
@@ -637,7 +682,7 @@ def register_callbacks(app):
     )
     def run_rehandling_simulation(n_clicks, sim_count, fill_ratio):
         """运行翻箱率蒙特卡洛模拟"""
-        _debug(f'run_rehandling_simulation触发 n_clicks={n_clicks}')
+        _debug(f'run_rehandling_simulation触发 n_clicks={n_clicks}, sim_count={sim_count}, fill_ratio={fill_ratio}')
 
         ef = empty_figure(
             '点击"运行蒙特卡洛模拟"开始分析（首次需数分钟）'
@@ -645,44 +690,55 @@ def register_callbacks(app):
         dashes = ['-'] * 6
 
         if not S.is_initialized():
+            _debug('  ⚠️ 数据未初始化')
             return (ef, [], [], [], *dashes)
 
         # 初始加载: 显示提示
         if n_clicks is None or n_clicks == 0:
             if S.rehandling_results_cache is not None:
+                _debug(f'  使用缓存结果: {len(S.rehandling_results_cache)} 条')
                 return _format_rehandling_results(S.rehandling_results_cache)
+            _debug('  初始状态: 显示占位')
             return (ef, [], [], [], *dashes)
 
         # 点击运行: 执行模拟
         try:
+            _sim_count = int(sim_count) if sim_count else 1000
+            _fill_ratio = float(fill_ratio) if fill_ratio else 0.7
+            _debug(f'  开始模拟: sim_count={_sim_count}, fill_ratio={_fill_ratio}')
+
             simulator = YardStackSimulator(
-                S.yard_df, num_simulations=sim_count or 1000,
+                S.yard_df, num_simulations=_sim_count,
                 seed=np.random.randint(1, 9999)
             )
             all_results = []
-            # 模拟前4个代表性区域（缩短时间）
             areas = S.yard_df['区域编号'].tolist()[:4]
+            _debug(f'  模拟区域: {areas}')
+
             for area_id in areas:
+                _debug(f'    正在模拟区域 {area_id}...')
                 area_results = simulator.run_single_area_simulation(
-                    area_id, fill_ratio=fill_ratio or 0.7
+                    area_id, fill_ratio=_fill_ratio
                 )
+                _debug(f'    {area_id}: {len(area_results)} 个策略')
                 for strategy, result in area_results.items():
                     all_results.append({
                         '区域': area_id,
                         '策略': strategy,
-                        '平均翻箱率': result.avg_relocation_rate,
-                        'P95翻箱率': result.p95_relocation_rate,
-                        '总提箱次数': result.total_pickups,
-                        '总翻箱次数': result.total_relocations
+                        '平均翻箱率': float(result.avg_relocation_rate),
+                        'P95翻箱率': float(result.p95_relocation_rate),
+                        '总提箱次数': int(result.total_pickups),
+                        '总翻箱次数': int(result.total_relocations)
                     })
 
+            _debug(f'  模拟完成，共 {len(all_results)} 条记录')
             result_df = pd.DataFrame(all_results)
             S.rehandling_results_cache = result_df
-            _debug(f'翻箱率模拟完成: {len(result_df)} 条记录')
             return _format_rehandling_results(result_df)
         except Exception as e:
+            _debug(f'  ⚠️ 模拟异常: {e}')
             traceback.print_exc()
-            return (empty_figure(f'模拟失败: {str(e)[:50]}'), [], [], [], *dashes)
+            return (empty_figure(f'模拟失败: {str(e)[:60]}'), [], [], [], *dashes)
 
     # =============================================
     # 回调7: KPI仪表板 (初始加载自动跑)

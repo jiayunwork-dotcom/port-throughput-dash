@@ -186,11 +186,18 @@ class YardStackSimulator:
 
             key = (target.bay, target.row)
             stack = bay_row_stacks.get(key, [])
+            if not stack:
+                if target.id in present:
+                    del present[target.id]
+                continue
+
             stack_ids = [c.id for c in stack]
 
             try:
                 target_idx = stack_ids.index(target.id)
             except ValueError:
+                if target.id in present:
+                    del present[target.id]
                 continue
 
             above_boxes = stack[target_idx + 1:]
@@ -198,27 +205,30 @@ class YardStackSimulator:
 
             for box in above_boxes:
                 box_id = box.id
-                if box_id in present:
-                    placed = False
-                    for alt_key, alt_stack in bay_row_stacks.items():
-                        if alt_key == key:
-                            continue
-                        if len(alt_stack) < 10:
-                            max_t = max((c.tier for c in alt_stack), default=-1)
-                            box.bay, box.row = alt_key
-                            box.tier = max_t + 1
-                            alt_stack.append(box)
-                            bay_row_stacks[alt_key] = sorted(alt_stack, key=lambda c: c.tier)
-                            placed = True
-                            break
-                    if not placed:
+                if box_id not in present:
+                    continue
+                placed = False
+                for alt_key, alt_stack in bay_row_stacks.items():
+                    if alt_key == key:
+                        continue
+                    if len(alt_stack) < 10:
+                        max_t = max((c.tier for c in alt_stack), default=-1)
+                        alt_bay, alt_row = alt_key
+                        box.bay = alt_bay
+                        box.row = alt_row
+                        box.tier = max_t + 1
+                        alt_stack.append(box)
+                        bay_row_stacks[alt_key] = sorted(alt_stack, key=lambda c: c.tier)
+                        placed = True
+                        break
+                if not placed:
+                    if box_id in present:
                         del present[box_id]
 
             new_stack = [c for c in stack if c.id != target.id]
-            for c in new_stack:
-                key_new = (c.bay, c.row)
-            bay_row_stacks[key] = new_stack
-            del present[target.id]
+            bay_row_stacks[key] = sorted(new_stack, key=lambda c: c.tier)
+            if target.id in present:
+                del present[target.id]
             total_pickups += 1
 
         return total_pickups, total_relocations
@@ -352,11 +362,18 @@ class OverdueBoxAnalyzer:
             平均堆存天数=('堆存时长_天', 'mean')
         ).reset_index().sort_values('超期箱数量', ascending=False)
 
+        by_customer['平均超期天数'] = by_customer['平均超期天数'].round(1)
+        by_customer['平均堆存天数'] = by_customer['平均堆存天数'].round(1)
+        by_customer['预估滞箱费用'] = by_customer['预估滞箱费用'].round(0).astype(int)
+
         by_area = overdue_df.groupby('堆场区域').agg(
             超期箱数量=('箱号', 'count'),
             平均超期天数=('超期天数', 'mean'),
             预估滞箱费用=('滞箱费用', 'sum')
         ).reset_index().sort_values('超期箱数量', ascending=False)
+
+        by_area['平均超期天数'] = by_area['平均超期天数'].round(1)
+        by_area['预估滞箱费用'] = by_area['预估滞箱费用'].round(0).astype(int)
 
         by_route = overdue_df.groupby('航线').agg(
             超期箱数量=('箱号', 'count'),

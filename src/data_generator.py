@@ -52,14 +52,13 @@ class PortDataGenerator:
         berths = ['B1', 'B2', 'B3', 'B4']
 
         num_vessels = 300
-        current_time = self.start_date
+
+        total_hours = self.days * 24
+        arrival_offsets = np.sort(np.random.uniform(0, total_hours, num_vessels))
 
         for i in range(num_vessels):
             name = random.choice(vessel_names) + f'-{i+1:03d}'
-            arrival = current_time + timedelta(
-                hours=np.random.uniform(0.5, 12),
-                minutes=np.random.randint(0, 60)
-            )
+            arrival = self.start_date + timedelta(hours=float(arrival_offsets[i]))
             teu = int(np.random.normal(2500, 800))
             teu = max(400, min(teu, 6000))
             duration_hours = teu / (np.random.uniform(25, 40))
@@ -73,7 +72,6 @@ class PortDataGenerator:
                 '载箱量TEU': teu,
                 '分配泊位编号': berth
             })
-            current_time = departure + timedelta(hours=np.random.uniform(0.1, 3))
 
         return pd.DataFrame(vessels)
 

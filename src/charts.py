@@ -372,12 +372,21 @@ class ChartBuilder:
                             subplot_titles=[t for _, t, _ in cols_to_plot],
                             vertical_spacing=0.15, horizontal_spacing=0.12)
 
+        all_periods = pd.to_datetime(kpi_df['period'])
+        x_min = all_periods.min()
+        x_max = all_periods.max()
+        if pd.notnull(x_min) and pd.notnull(x_max) and x_min == x_max:
+            x_min = x_min - pd.Timedelta(days=1)
+            x_max = x_max + pd.Timedelta(days=1)
+        x_pad = (x_max - x_min) * 0.03 if pd.notnull(x_min) and pd.notnull(x_max) and x_max > x_min else pd.Timedelta(days=1)
+        x_range = [x_min - x_pad, x_max + x_pad] if pd.notnull(x_min) and pd.notnull(x_max) else None
+
         for idx, (col_name, title, color) in enumerate(cols_to_plot):
             r = idx // cols + 1
             c = idx % cols + 1
 
             vals = kpi_df[col_name].dropna()
-            periods = kpi_df.loc[vals.index, 'period'].astype(str)
+            periods = pd.to_datetime(kpi_df.loc[vals.index, 'period'])
             mean_v = vals.mean()
             std_v = vals.std()
 
@@ -456,7 +465,12 @@ class ChartBuilder:
 
         for r in range(1, rows + 1):
             for c in range(1, cols + 1):
-                fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0', row=r, col=c)
+                fig.update_xaxes(
+                    showgrid=True, gridcolor='#f0f0f0',
+                    row=r, col=c
+                )
+                if x_range is not None:
+                    fig.update_xaxes(range=x_range, row=r, col=c)
                 fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0', row=r, col=c)
 
         return fig
