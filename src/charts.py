@@ -661,3 +661,206 @@ class ChartBuilder:
             title='泊位效率排行（按周转时间）',
             xlabel='平均周转时间 (小时)', ylabel='泊位编号',
             height=400, showlegend=False)
+
+    @classmethod
+    def create_simulation_timeline_chart(cls, timeline_df: pd.DataFrame) -> go.Figure:
+        """创建仿真时间轴折线图：锚地等待数 + 在泊作业数"""
+        if timeline_df is None or timeline_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text='暂无仿真数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='锚地与在泊船舶数量变化', height=400)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=timeline_df['时间_小时'], y=timeline_df['锚地等待数'],
+            name='锚地等待数', mode='lines',
+            line=dict(color=cls.COLORS['warning'], width=2.5),
+            fill='tozeroy', fillcolor='rgba(214, 158, 46, 0.15)',
+            stackgroup=None
+        ))
+        fig.add_trace(go.Scatter(
+            x=timeline_df['时间_小时'], y=timeline_df['在泊作业数'],
+            name='在泊作业数', mode='lines',
+            line=dict(color=cls.COLORS['primary'], width=2.5),
+            fill='tozeroy', fillcolor='rgba(26, 54, 93, 0.15)',
+        ))
+
+        return cls._update_layout(fig,
+            title='锚地等待与在泊作业船舶数量变化',
+            xlabel='仿真时间 (小时)', ylabel='船舶数量 (艘)',
+            height=400)
+
+    @classmethod
+    def create_simulation_berth_gantt(cls, berth_df: pd.DataFrame, sim_duration: float) -> go.Figure:
+        """创建仿真泊位甘特图（复用现有泊位甘特图风格）"""
+        if berth_df is None or berth_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text='暂无仿真数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='仿真泊位甘特图', height=400)
+
+        df = berth_df.copy()
+        berths = sorted(df['泊位编号'].unique())
+
+        def get_color(teu):
+            if teu < 2000:
+                return '#90cdf4'
+            elif teu <= 5000:
+                return '#3182ce'
+            else:
+                return '#1a365d'
+
+        fig = go.Figure()
+
+        for berth in berths:
+            berth_vessels = df[df['泊位编号'] == berth]
+            for _, row in berth_vessels.iterrows():
+                duration = row['结束时间'] - row['开始时间']
+                hover_text = (
+                    f"<b>{row['船名']}</b><br>"
+                    f"泊位: {berth}<br>"
+                    f"开始: {row['开始时间']:.1f} 小时<br>"
+                    f"结束: {row['结束时间']:.1f} 小时<br>"
+                    f"载箱量: {row['载箱量TEU']:,} TEU<br>"
+                    f"作业时长: {duration:.1f} 小时"
+                )
+
+                fig.add_trace(go.Bar(
+                    x=[duration],
+                    y=[berth],
+                    base=[row['开始时间']],
+                    orientation='h',
+                    marker=dict(
+                        color=get_color(row['载箱量TEU']),
+                        line=dict(color='white', width=1)
+                    ),
+                    hovertemplate=hover_text,
+                    name=berth,
+                    showlegend=False,
+                    width=0.6
+                ))
+
+        fig.update_layout(
+            barmode='overlay',
+            xaxis=dict(
+                title='仿真时间 (小时)',
+                showgrid=True,
+                gridcolor='#f0f0f0',
+            ),
+            yaxis=dict(
+                title='泊位',
+                showgrid=True,
+                gridcolor='#f0f0f0',
+                categoryorder='array',
+                categoryarray=list(reversed(berths))
+            ),
+            hovermode='closest'
+        )
+
+        if sim_duration:
+            fig.update_xaxes(range=[0, sim_duration])
+
+        return cls._update_layout(fig,
+            title='仿真泊位甘特图（按载箱量分色）',
+            xlabel='时间 (小时)', ylabel='泊位编号',
+            height=400, showlegend=False)
+
+    @classmethod
+    def create_wait_time_histogram(cls, ships: list) -> go.Figure:
+        """创建等待时长分布直方图"""
+        if ships is None or len(ships) == 0:
+            fig = go.Figure()
+            fig.add_annotation(text='暂无仿真数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='等待时长分布直方图', height=400)
+
+        wait_times = [s.start_time - s.arrival_time for s in ships
+                       if hasattr(s, 'start_time') and s.start_time > 0
+                       and hasattr(s, 'departure_time') and s.departure_time > 0
+                       and not getattr(s, 'rejected', False)]
+
+        if not wait_times:
+            fig = go.Figure()
+            fig.add_annotation(text='无等待数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='等待时长分布直方图', height=400)
+
+        wait_times = np.array(wait_times)
+
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=wait_times,
+            nbinsx=20,
+            name='船舶数量',
+            marker=dict(
+                color=cls.PALETTE[0],
+                line=dict(color='white', width=1),
+                opacity=0.85
+            ),
+            histnorm=''
+        ))
+
+        avg_wait = np.mean(wait_times)
+        fig.add_vline(
+            x=avg_wait, line_dash='dash', line_color=cls.COLORS['danger'], line_width=2,
+            annotation_text=f'平均: {avg_wait:.1f} h',
+            annotation_position='top right'
+        )
+
+        return cls._update_layout(fig,
+            title='船舶等待时长分布直方图',
+            xlabel='等待时长 (小时)', ylabel='船舶数量 (艘)',
+            height=400, showlegend=False)
+
+    @classmethod
+    def create_sensitivity_chart(cls, sensitivity_df: pd.DataFrame) -> go.Figure:
+        """创建敏感性分析折线图"""
+        if sensitivity_df is None or sensitivity_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text='暂无敏感性分析数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='敏感性分析', height=450)
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=sensitivity_df['到港间隔_小时'],
+            y=sensitivity_df['平均等待时长_小时'],
+            name='平均等待时长 (小时)',
+            mode='lines+markers',
+            line=dict(color=cls.PALETTE[0], width=3),
+            marker=dict(size=8, symbol='circle'),
+            yaxis='y1'
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=sensitivity_df['到港间隔_小时'],
+            y=sensitivity_df['泊位平均利用率'] * 100,
+            name='泊位平均利用率 (%)',
+            mode='lines+markers',
+            line=dict(color=cls.PALETTE[1], width=3),
+            marker=dict(size=8, symbol='diamond'),
+            yaxis='y2'
+        ))
+
+        fig.update_layout(
+            yaxis=dict(
+                title='平均等待时长 (小时)',
+                showgrid=True,
+                gridcolor='#f0f0f0',
+            ),
+            yaxis2=dict(
+                title='泊位平均利用率 (%)',
+                overlaying='y',
+                side='right',
+                showgrid=False,
+                tickformat=',.1f'
+            )
+        )
+
+        return cls._update_layout(fig,
+            title='敏感性分析：到港间隔 vs 等待时长 & 泊位利用率',
+            xlabel='船舶到港间隔均值 (小时)', ylabel='',
+            height=450,
+            showlegend=True, legend_orientation='h')

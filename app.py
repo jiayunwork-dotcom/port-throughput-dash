@@ -70,6 +70,7 @@ def make_header():
             dbc.NavItem(dbc.NavLink('翻箱率分析', href='#rehandling')),
             dbc.NavItem(dbc.NavLink('KPI面板', href='#kpi')),
             dbc.NavItem(dbc.NavLink('What-if分析', href='#whatif')),
+            dbc.NavItem(dbc.NavLink('船舶排队仿真', href='#simulation')),
             dbc.DropdownMenu(
                 children=[
                     dbc.DropdownMenuItem('导出PDF报告', id='export-pdf-btn'),
@@ -909,6 +910,235 @@ def make_whatif_section():
     ])
 
 
+def make_simulation_section():
+    """创建船舶排队调度仿真模块"""
+    return html.Div(id='simulation', children=[
+        html.H3([html.I(className='fas fa-ship me-2 text-primary'),
+                 '船舶排队调度仿真分析'],
+                className='mt-5 mb-3 border-bottom pb-2'),
+
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-sliders-h me-2'),
+                        '仿真参数设置'
+                    ]),
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label('船舶到港间隔均值 (小时)', className='fw-bold'),
+                                html.Small('指数分布', className='text-muted ms-2'),
+                                dcc.Input(
+                                    id='sim-arrival-mean',
+                                    type='number',
+                                    value=8, min=1, max=48, step=0.5,
+                                    className='form-control'
+                                ),
+                            ], md=6),
+                            dbc.Col([
+                                html.Label('装卸作业时长均值 (小时)', className='fw-bold'),
+                                html.Small('正态分布', className='text-muted ms-2'),
+                                dcc.Input(
+                                    id='sim-service-mean',
+                                    type='number',
+                                    value=36, min=4, max=120, step=1,
+                                    className='form-control'
+                                ),
+                            ], md=6),
+                        ], className='mb-3'),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label('装卸时长标准差 (小时)', className='fw-bold'),
+                                dcc.Input(
+                                    id='sim-service-std',
+                                    type='number',
+                                    value=6, min=0.5, max=24, step=0.5,
+                                    className='form-control'
+                                ),
+                            ], md=6),
+                            dbc.Col([
+                                html.Label('泊位数量', className='fw-bold'),
+                                dcc.Input(
+                                    id='sim-num-berths',
+                                    type='number',
+                                    value=4, min=1, max=20, step=1,
+                                    className='form-control'
+                                ),
+                            ], md=6),
+                        ], className='mb-3'),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Label('最大锚地等待容量 (艘)', className='fw-bold'),
+                                dcc.Input(
+                                    id='sim-max-anchor',
+                                    type='number',
+                                    value=20, min=5, max=100, step=1,
+                                    className='form-control'
+                                ),
+                            ], md=6),
+                            dbc.Col([
+                                html.Label('仿真时长 (天)', className='fw-bold'),
+                                dcc.Input(
+                                    id='sim-duration-days',
+                                    type='number',
+                                    value=30, min=1, max=365, step=1,
+                                    className='form-control'
+                                ),
+                            ], md=6),
+                        ], className='mb-3'),
+                        html.Hr(),
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Button(
+                                    [html.I(className='fas fa-play-circle me-2'),
+                                     '运行仿真'],
+                                    id='run-sim-btn',
+                                    color='primary',
+                                    className='w-100'
+                                ),
+                            ], md=6),
+                            dbc.Col([
+                                dbc.Button(
+                                    [html.I(className='fas fa-chart-line me-2'),
+                                     '敏感性分析'],
+                                    id='run-sensitivity-btn',
+                                    color='info',
+                                    outline=True,
+                                    className='w-100'
+                                ),
+                            ], md=6),
+                        ]),
+                        dcc.Loading(id='sim-queue-loading', type='default', children=[]),
+                    ])
+                ], className='mb-4'),
+            ], md=3),
+
+            dbc.Col([
+                dbc.Row([
+                    dbc.Col(dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.I(className='fas fa-clock me-2 text-info'),
+                                html.Span('平均等待时长', className='text-muted small')
+                            ]),
+                            html.H3(id='sim-avg-wait', className='fw-bold mt-1',
+                                    style={'color': '#3182ce'}),
+                            html.Small('小时', className='text-muted'),
+                        ])
+                    ], id='sim-card-avg-wait', className='shadow-sm'), md=4),
+                    dbc.Col(dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.I(className='fas fa-hourglass-end me-2 text-warning'),
+                                html.Span('最大等待时长', className='text-muted small')
+                            ]),
+                            html.H3(id='sim-max-wait', className='fw-bold mt-1 text-warning'),
+                            html.Small('小时', className='text-muted'),
+                        ])
+                    ], className='shadow-sm'), md=4),
+                    dbc.Col(dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.I(className='fas fa-anchor me-2 text-success'),
+                                html.Span('泊位平均利用率', className='text-muted small')
+                            ]),
+                            html.H3(id='sim-berth-util', className='fw-bold mt-1 text-success'),
+                            html.Small('%', className='text-muted'),
+                        ])
+                    ], className='shadow-sm'), md=4),
+                ], className='g-3 mb-3'),
+                dbc.Row([
+                    dbc.Col(dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.I(className='fas fa-cogs me-2 text-primary'),
+                                html.Span('平均服务时间', className='text-muted small')
+                            ]),
+                            html.H3(id='sim-avg-service', className='fw-bold mt-1',
+                                    style={'color': '#2b6cb0'}),
+                            html.Small('小时', className='text-muted'),
+                        ])
+                    ], className='shadow-sm'), md=4),
+                    dbc.Col(dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.I(className='fas fa-ship me-2 text-secondary'),
+                                html.Span('吞吐量', className='text-muted small')
+                            ]),
+                            html.H3(id='sim-throughput', className='fw-bold mt-1 text-secondary'),
+                            html.Small('艘', className='text-muted'),
+                        ])
+                    ], className='shadow-sm'), md=4),
+                    dbc.Col(dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.I(className='fas fa-ban me-2 text-danger'),
+                                html.Span('拒绝率', className='text-muted small')
+                            ]),
+                            html.H3(id='sim-reject-rate', className='fw-bold mt-1 text-danger'),
+                            html.Small('%', className='text-muted'),
+                        ])
+                    ], id='sim-card-reject', className='shadow-sm'), md=4),
+                ], className='g-3 mb-4'),
+            ], md=9),
+        ]),
+
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-chart-area me-2'),
+                        '锚地与在泊船舶数量变化'
+                    ]),
+                    dbc.CardBody([
+                        dcc.Graph(id='sim-timeline-chart')
+                    ])
+                ], className='mb-4'),
+            ], md=12),
+        ]),
+
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-timeline me-2'),
+                        '泊位占用甘特图'
+                    ]),
+                    dbc.CardBody([
+                        dcc.Graph(id='sim-berth-gantt')
+                    ])
+                ], className='mb-4'),
+            ], md=8),
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-histogram me-2'),
+                        '等待时长分布'
+                    ]),
+                    dbc.CardBody([
+                        dcc.Graph(id='sim-wait-histogram')
+                    ])
+                ], className='mb-4 h-100'),
+            ], md=4),
+        ]),
+
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-project-diagram me-2'),
+                        '敏感性分析：到港间隔 vs 关键指标'
+                    ]),
+                    dbc.CardBody([
+                        dcc.Graph(id='sim-sensitivity-chart')
+                    ])
+                ], className='mb-4'),
+            ], md=12),
+        ]),
+    ])
+
+
 def make_footer():
     """创建页脚"""
     return html.Footer([
@@ -935,6 +1165,7 @@ app.layout = html.Div([
         make_rehandling_section(),
         make_kpi_section(),
         make_whatif_section(),
+        make_simulation_section(),
     ], fluid=True, className='px-4'),
     make_footer()
 ])

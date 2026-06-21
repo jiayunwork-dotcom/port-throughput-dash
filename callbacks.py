@@ -32,6 +32,7 @@ from src.rehandling import YardStackSimulator, OverdueBoxAnalyzer
 from src.whatif import WhatIfScenario
 from src.report_generator import PortReportGenerator
 from src.charts import ChartBuilder
+from src.simulation import ShipQueueSimulator
 
 
 def empty_figure(title='暂无数据，请先加载数据或运行相应模块'):
@@ -1297,3 +1298,175 @@ def register_callbacks(app):
             err_fig = empty_figure(f'甘特图生成失败: {str(e)[:50]}')
             err_summary = dbc.Alert(f'错误: {str(e)[:80]}', color='danger')
             return (slider_value or [0, 100], '错误', err_fig, err_summary, [], empty_cards)
+
+    # =============================================
+    # 回调11: 船舶排队调度仿真 - 单次仿真
+    # =============================================
+    @app.callback(
+        Output('sim-timeline-chart', 'figure'),
+        Output('sim-berth-gantt', 'figure'),
+        Output('sim-wait-histogram', 'figure'),
+        Output('sim-avg-wait', 'children'),
+        Output('sim-max-wait', 'children'),
+        Output('sim-berth-util', 'children'),
+        Output('sim-avg-service', 'children'),
+        Output('sim-throughput', 'children'),
+        Output('sim-reject-rate', 'children'),
+        Output('sim-card-avg-wait', 'style'),
+        Output('sim-card-reject', 'style'),
+        Output('sim-queue-loading', 'children'),
+        [Input('run-sim-btn', 'n_clicks')],
+        [State('sim-arrival-mean', 'value'),
+         State('sim-service-mean', 'value'),
+         State('sim-service-std', 'value'),
+         State('sim-num-berths', 'value'),
+         State('sim-max-anchor', 'value'),
+         State('sim-duration-days', 'value')],
+        prevent_initial_call=False
+    )
+    def run_simulation(n_clicks, arrival_mean, service_mean, service_std,
+                        num_berths, max_anchor, duration_days):
+        """运行船舶排队调度仿真"""
+        _debug(f'run_simulation触发 n_clicks={n_clicks}')
+
+        ef_timeline = empty_figure('点击"运行仿真"按钮开始船舶排队调度仿真')
+        ef_gantt = empty_figure('点击"运行仿真"按钮开始船舶排队调度仿真')
+        ef_hist = empty_figure('点击"运行仿真"按钮开始船舶排队调度仿真')
+        dashes = ['-'] * 6
+        normal_style = {}
+
+        if n_clicks is None or n_clicks == 0:
+            if S.simulation_result is not None:
+                return _format_simulation_results(S.simulation_result)
+            return (ef_timeline, ef_gantt, ef_hist, *dashes, normal_style, normal_style, [])
+
+        try:
+            arrival_mean = float(arrival_mean) if arrival_mean else 8.0
+            service_mean = float(service_mean) if service_mean else 36.0
+            service_std = float(service_std) if service_std else 6.0
+            num_berths = int(num_berths) if num_berths else 4
+            max_anchor = int(max_anchor) if max_anchor else 20
+            duration_days = int(duration_days) if duration_days else 30
+            sim_duration = duration_days * 24.0
+
+            simulator = ShipQueueSimulator(seed=np.random.randint(1, 99999))
+            result = simulator.run(
+                arrival_mean=arrival_mean,
+                service_mean=service_mean,
+                service_std=service_std,
+                num_berths=num_berths,
+                max_anchor=max_anchor,
+                sim_duration=sim_duration
+            )
+
+            S.simulation_result = result
+            return _format_simulation_results(result)
+
+        except Exception as e:
+            traceback.print_exc()
+            return (
+                empty_figure(f'仿真失败: {str(e)[:50]}'),
+                empty_figure(f'仿真失败: {str(e)[:50]}'),
+                empty_figure(f'仿真失败: {str(e)[:50]}'),
+                *['-'] * 6, normal_style, normal_style, []
+            )
+
+    def _format_simulation_results(result):
+        """格式化仿真结果用于展示"""
+        timeline_fig = ChartBuilder.create_simulation_timeline_chart(result.timeline_data)
+        berth_gantt_fig = ChartBuilder.create_simulation_berth_gantt(
+            result.berth_occupancy, result.params['sim_duration']
+        )
+        wait_hist_fig = ChartBuilder.create_wait_time_histogram(result.ships)
+
+        stats = result.stats
+        avg_wait = stats['avg_wait_time']
+        max_wait = stats['max_wait_time']
+        berth_util = stats['avg_berth_utilization'] * 100
+        avg_service = stats['avg_service_time']
+        throughput = stats['throughput']
+        reject_rate = stats['reject_rate'] * 100
+
+        avg_wait_style = {}
+        reject_style = {}
+
+        if avg_wait > 24:
+            avg_wait_style = {
+                'border': '2px solid #e53e3e',
+                'backgroundColor': '#fff5f5'
+            }
+
+        if reject_rate > 5:
+            reject_style = {
+                'border': '2px solid #e53e3e',
+                'backgroundColor': '#fff5f5'
+            }
+
+        return (
+            timeline_fig, berth_gantt_fig, wait_hist_fig,
+            f'{avg_wait:.1f}',
+            f'{max_wait:.1f}',
+            f'{berth_util:.1f}',
+            f'{avg_service:.1f}',
+            f'{throughput}',
+            f'{reject_rate:.2f}',
+            avg_wait_style,
+            reject_style,
+            []
+        )
+
+    # =============================================
+    # 回调12: 敏感性分析
+    # =============================================
+    @app.callback(
+        Output('sim-sensitivity-chart', 'figure'),
+        Output('sim-queue-loading', 'children', allow_duplicate=True),
+        [Input('run-sensitivity-btn', 'n_clicks')],
+        [State('sim-service-mean', 'value'),
+         State('sim-service-std', 'value'),
+         State('sim-num-berths', 'value'),
+         State('sim-max-anchor', 'value'),
+         State('sim-duration-days', 'value')],
+        prevent_initial_call='initial_duplicate'
+    )
+    def run_sensitivity_analysis(n_clicks, service_mean, service_std,
+                                  num_berths, max_anchor, duration_days):
+        """运行敏感性分析"""
+        _debug(f'run_sensitivity_analysis触发 n_clicks={n_clicks}')
+
+        ef = empty_figure('点击"敏感性分析"按钮开始分析')
+
+        if n_clicks is None or n_clicks == 0:
+            if S.sensitivity_result is not None:
+                sens_fig = ChartBuilder.create_sensitivity_chart(S.sensitivity_result)
+                return sens_fig, []
+            return ef, []
+
+        try:
+            service_mean = float(service_mean) if service_mean else 36.0
+            service_std = float(service_std) if service_std else 6.0
+            num_berths = int(num_berths) if num_berths else 4
+            max_anchor = int(max_anchor) if max_anchor else 20
+            duration_days = int(duration_days) if duration_days else 30
+            sim_duration = duration_days * 24.0
+
+            arrival_means = list(range(4, 17, 2))
+
+            simulator = ShipQueueSimulator()
+            sensitivity_df = simulator.run_sensitivity_analysis(
+                arrival_means=arrival_means,
+                service_mean=service_mean,
+                service_std=service_std,
+                num_berths=num_berths,
+                max_anchor=max_anchor,
+                sim_duration=sim_duration,
+                base_seed=np.random.randint(1, 9999)
+            )
+
+            S.sensitivity_result = sensitivity_df
+            sens_fig = ChartBuilder.create_sensitivity_chart(sensitivity_df)
+            return sens_fig, []
+
+        except Exception as e:
+            traceback.print_exc()
+            return empty_figure(f'敏感性分析失败: {str(e)[:50]}'), []
