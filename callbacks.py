@@ -32,7 +32,7 @@ from src.rehandling import YardStackSimulator, OverdueBoxAnalyzer
 from src.whatif import WhatIfScenario
 from src.report_generator import PortReportGenerator
 from src.charts import ChartBuilder
-from src.simulation import ShipQueueSimulator
+from src.simulation import ShipQueueSimulator, STRATEGY_FCFS, STRATEGY_SJF, STRATEGY_LWF, STRATEGY_ALL
 
 
 def empty_figure(title='暂无数据，请先加载数据或运行相应模块'):
@@ -1300,7 +1300,7 @@ def register_callbacks(app):
             return (slider_value or [0, 100], '错误', err_fig, err_summary, [], empty_cards)
 
     # =============================================
-    # 回调11: 船舶排队调度仿真 - 单次仿真
+    # 回调11: 船舶排队调度仿真 - 单策略/三策略对比
     # =============================================
     @app.callback(
         Output('sim-timeline-chart', 'figure'),
@@ -1314,9 +1314,17 @@ def register_callbacks(app):
         Output('sim-reject-rate', 'children'),
         Output('sim-card-avg-wait', 'style'),
         Output('sim-card-reject', 'style'),
+        Output('sim-stats-container', 'style'),
+        Output('sim-multi-stats-container', 'style'),
+        Output('sim-multi-stats-container', 'children'),
+        Output('sim-replay-controls', 'style'),
+        Output('replay-slider', 'max'),
+        Output('replay-slider', 'value'),
+        Output('replay-time-label', 'children'),
         Output('sim-queue-loading', 'children'),
         [Input('run-sim-btn', 'n_clicks')],
-        [State('sim-arrival-mean', 'value'),
+        [State('sim-strategy', 'value'),
+         State('sim-arrival-mean', 'value'),
          State('sim-service-mean', 'value'),
          State('sim-service-std', 'value'),
          State('sim-num-berths', 'value'),
@@ -1324,21 +1332,32 @@ def register_callbacks(app):
          State('sim-duration-days', 'value')],
         prevent_initial_call=False
     )
-    def run_simulation(n_clicks, arrival_mean, service_mean, service_std,
+    def run_simulation(n_clicks, strategy, arrival_mean, service_mean, service_std,
                         num_berths, max_anchor, duration_days):
-        """运行船舶排队调度仿真"""
-        _debug(f'run_simulation触发 n_clicks={n_clicks}')
+        """运行船舶排队调度仿真（支持单策略和三策略对比）"""
+        _debug(f'run_simulation触发 n_clicks={n_clicks}, strategy={strategy}')
 
         ef_timeline = empty_figure('点击"运行仿真"按钮开始船舶排队调度仿真')
         ef_gantt = empty_figure('点击"运行仿真"按钮开始船舶排队调度仿真')
         ef_hist = empty_figure('点击"运行仿真"按钮开始船舶排队调度仿真')
         dashes = ['-'] * 6
         normal_style = {}
+        single_stats_style = {'display': 'block'}
+        multi_stats_style = {'display': 'none'}
+        multi_stats_children = []
+        replay_style = {'display': 'none'}
+        slider_max = 100
+        slider_val = 0
+        time_label = ''
 
         if n_clicks is None or n_clicks == 0:
-            if S.simulation_result is not None:
+            if S.simulation_result is not None and S.simulation_result.strategy != STRATEGY_ALL:
                 return _format_simulation_results(S.simulation_result)
-            return (ef_timeline, ef_gantt, ef_hist, *dashes, normal_style, normal_style, [])
+            elif S.multi_strategy_results is not None:
+                return _format_multi_strategy_results(S.multi_strategy_results)
+            return (ef_timeline, ef_gantt, ef_hist, *dashes, normal_style, normal_style,
+                    single_stats_style, multi_stats_style, multi_stats_children,
+                    replay_style, slider_max, slider_val, time_label, [])
 
         try:
             arrival_mean = float(arrival_mean) if arrival_mean else 8.0
@@ -1349,18 +1368,48 @@ def register_callbacks(app):
             duration_days = int(duration_days) if duration_days else 30
             sim_duration = duration_days * 24.0
 
-            simulator = ShipQueueSimulator(seed=np.random.randint(1, 99999))
-            result = simulator.run(
-                arrival_mean=arrival_mean,
-                service_mean=service_mean,
-                service_std=service_std,
-                num_berths=num_berths,
-                max_anchor=max_anchor,
-                sim_duration=sim_duration
-            )
+            base_seed = np.random.randint(1, 99999)
 
-            S.simulation_result = result
-            return _format_simulation_results(result)
+            if strategy == STRATEGY_ALL:
+                strategies = [STRATEGY_FCFS, STRATEGY_SJF, STRATEGY_LWF]
+                results = {}
+                for i, strat in enumerate(strategies):
+                    simulator = ShipQueueSimulator(seed=base_seed + i)
+                    result = simulator.run(
+                        arrival_mean=arrival_mean,
+                        service_mean=service_mean,
+                        service_std=service_std,
+                        num_berths=num_berths,
+                        max_anchor=max_anchor,
+                        sim_duration=sim_duration,
+                        strategy=strat
+                    )
+                    results[strat] = result
+
+                S.multi_strategy_results = results
+                S.simulation_result = None
+                S.replay_enabled = False
+                return _format_multi_strategy_results(results)
+            else:
+                simulator = ShipQueueSimulator(seed=base_seed)
+                result = simulator.run(
+                    arrival_mean=arrival_mean,
+                    service_mean=service_mean,
+                    service_std=service_std,
+                    num_berths=num_berths,
+                    max_anchor=max_anchor,
+                    sim_duration=sim_duration,
+                    strategy=strategy
+                )
+
+                S.simulation_result = result
+                S.multi_strategy_results = None
+                S.replay_enabled = True
+                S.replay_current_time = 0.0
+                S.replay_playing = False
+                S.replay_speed = 1.0
+
+                return _format_simulation_results(result)
 
         except Exception as e:
             traceback.print_exc()
@@ -1368,24 +1417,40 @@ def register_callbacks(app):
                 empty_figure(f'仿真失败: {str(e)[:50]}'),
                 empty_figure(f'仿真失败: {str(e)[:50]}'),
                 empty_figure(f'仿真失败: {str(e)[:50]}'),
-                *['-'] * 6, normal_style, normal_style, []
+                *['-'] * 6, normal_style, normal_style,
+                single_stats_style, multi_stats_style, multi_stats_children,
+                replay_style, slider_max, slider_val, time_label, []
             )
 
-    def _format_simulation_results(result):
-        """格式化仿真结果用于展示"""
-        timeline_fig = ChartBuilder.create_simulation_timeline_chart(result.timeline_data)
-        berth_gantt_fig = ChartBuilder.create_simulation_berth_gantt(
-            result.berth_occupancy, result.params['sim_duration']
-        )
-        wait_hist_fig = ChartBuilder.create_wait_time_histogram(result.ships)
+    def _format_simulation_results(result, current_time=None):
+        """格式化单策略仿真结果用于展示"""
+        sim_duration = result.params.get('sim_duration', 0)
 
-        stats = result.stats
+        if current_time is not None and current_time > 0:
+            timeline_fig = ChartBuilder.create_replay_timeline(result.timeline_data, current_time)
+            berth_gantt_fig = ChartBuilder.create_replay_berth_gantt(
+                result.berth_occupancy, sim_duration, current_time
+            )
+            stats = ShipQueueSimulator.get_stats_at_time(result, current_time)
+            wait_hist_fig = ChartBuilder.create_wait_time_histogram(
+                [s for s in result.ships if s.departure_time > 0 and s.departure_time <= current_time
+                 and not s.rejected]
+            )
+            avg_service = result.stats['avg_service_time']
+        else:
+            timeline_fig = ChartBuilder.create_simulation_timeline_chart(result.timeline_data)
+            berth_gantt_fig = ChartBuilder.create_simulation_berth_gantt(
+                result.berth_occupancy, sim_duration
+            )
+            wait_hist_fig = ChartBuilder.create_wait_time_histogram(result.ships)
+            stats = result.stats
+            avg_service = stats['avg_service_time']
+
         avg_wait = stats['avg_wait_time']
         max_wait = stats['max_wait_time']
         berth_util = stats['avg_berth_utilization'] * 100
-        avg_service = stats['avg_service_time']
         throughput = stats['throughput']
-        reject_rate = stats['reject_rate'] * 100
+        reject_rate = (stats.get('rejected_count', 0) / max(1, stats.get('total_arrivals', 1))) * 100
 
         avg_wait_style = {}
         reject_style = {}
@@ -1402,6 +1467,18 @@ def register_callbacks(app):
                 'backgroundColor': '#fff5f5'
             }
 
+        single_stats_style = {'display': 'block'}
+        multi_stats_style = {'display': 'none'}
+        multi_stats_children = []
+
+        replay_style = {'display': 'block'} if S.replay_enabled else {'display': 'none'}
+        slider_max = sim_duration
+        slider_val = current_time if current_time is not None else 0
+        if current_time is not None:
+            time_label = f'{current_time:.1f} h / {sim_duration:.0f} h'
+        else:
+            time_label = f'0.0 h / {sim_duration:.0f} h'
+
         return (
             timeline_fig, berth_gantt_fig, wait_hist_fig,
             f'{avg_wait:.1f}',
@@ -1412,8 +1489,146 @@ def register_callbacks(app):
             f'{reject_rate:.2f}',
             avg_wait_style,
             reject_style,
+            single_stats_style,
+            multi_stats_style,
+            multi_stats_children,
+            replay_style,
+            slider_max,
+            slider_val,
+            time_label,
             []
         )
+
+    def _format_multi_strategy_results(results):
+        """格式化三策略对比仿真结果"""
+        timeline_fig = ChartBuilder.create_multi_strategy_timeline(results)
+        wait_hist_fig = ChartBuilder.create_multi_strategy_wait_histogram(results)
+
+        first_key = list(results.keys())[0]
+        first_result = results[first_key]
+        berth_gantt_fig = ChartBuilder.create_simulation_berth_gantt(
+            first_result.berth_occupancy, first_result.params['sim_duration']
+        )
+
+        multi_stats_children = _build_multi_strategy_cards(results)
+
+        single_stats_style = {'display': 'none'}
+        multi_stats_style = {'display': 'block'}
+        replay_style = {'display': 'none'}
+        normal_style = {}
+
+        dashes = ['-'] * 6
+
+        return (
+            timeline_fig, berth_gantt_fig, wait_hist_fig,
+            *dashes, normal_style, normal_style,
+            single_stats_style, multi_stats_style, multi_stats_children,
+            replay_style, 100, 0, '', []
+        )
+
+    def _build_multi_strategy_cards(results):
+        """构建三策略对比的指标卡片（三列）"""
+        strategy_order = [STRATEGY_FCFS, STRATEGY_SJF, STRATEGY_LWF]
+        strategy_names = {
+            STRATEGY_FCFS: '先到先服务 (FCFS)',
+            STRATEGY_SJF: '最短作业优先 (SJF)',
+            STRATEGY_LWF: '最长等待优先 (LWF)',
+        }
+        strategy_colors = {
+            STRATEGY_FCFS: '#2b6cb0',
+            STRATEGY_SJF: '#38a169',
+            STRATEGY_LWF: '#e53e3e',
+        }
+
+        metrics = [
+            ('avg_wait_time', '平均等待时长', '小时', True),
+            ('max_wait_time', '最大等待时长', '小时', True),
+            ('avg_berth_utilization', '泊位利用率', '%', False),
+            ('throughput', '吞吐量', '艘', False),
+        ]
+
+        metric_values = {}
+        for strat in strategy_order:
+            if strat not in results:
+                continue
+            stats = results[strat].stats
+            metric_values[strat] = {}
+            for key, label, unit, is_lower_better in metrics:
+                val = stats.get(key, 0)
+                if key == 'avg_berth_utilization':
+                    val = val * 100
+                metric_values[strat][key] = val
+
+        best_metrics = {}
+        for key, label, unit, is_lower_better in metrics:
+            vals = []
+            for strat in strategy_order:
+                if strat in metric_values:
+                    vals.append(metric_values[strat][key])
+            if not vals:
+                continue
+            if is_lower_better:
+                best_metrics[key] = min(vals)
+            else:
+                best_metrics[key] = max(vals)
+
+        cards = []
+        for strat in strategy_order:
+            if strat not in results:
+                continue
+            color = strategy_colors.get(strat, '#3182ce')
+            name = strategy_names.get(strat, strat)
+
+            metric_cards = []
+            for key, label, unit, is_lower_better in metrics:
+                val = metric_values[strat][key]
+                is_best = val == best_metrics.get(key)
+
+                if is_best:
+                    value_style = {
+                        'color': '#38a169',
+                        'fontWeight': 'bold',
+                        'fontSize': '24px'
+                    }
+                    label_prefix = '👑 '
+                else:
+                    value_style = {'color': color}
+                    label_prefix = ''
+
+                if key == 'avg_berth_utilization':
+                    val_str = f'{val:.1f}'
+                elif key == 'throughput':
+                    val_str = f'{int(val)}'
+                else:
+                    val_str = f'{val:.1f}'
+
+                metric_cards.append(
+                    dbc.Col([
+                        html.Small(f'{label_prefix}{label}', className='text-muted d-block mb-1'),
+                        html.Div(val_str, style=value_style),
+                        html.Small(unit, className='text-muted')
+                    ], md=6, className='mb-3')
+                )
+
+            card = dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-ship me-2'),
+                        name
+                    ], style={'backgroundColor': color, 'color': 'white'}),
+                    dbc.CardBody([
+                        dbc.Row(metric_cards)
+                    ])
+                ], className='shadow-sm h-100')
+            ], md=4)
+            cards.append(card)
+
+        return html.Div([
+            html.H5([html.I(className='fas fa-trophy me-2 text-warning'),
+                     '三策略指标对比（最优指标绿色加粗）'],
+                    className='mb-3 text-center'),
+            dbc.Row(cards, className='g-3 mb-4')
+        ])
 
     # =============================================
     # 回调12: 敏感性分析
@@ -1422,17 +1637,18 @@ def register_callbacks(app):
         Output('sim-sensitivity-chart', 'figure'),
         Output('sim-queue-loading', 'children', allow_duplicate=True),
         [Input('run-sensitivity-btn', 'n_clicks')],
-        [State('sim-service-mean', 'value'),
+        [State('sim-strategy', 'value'),
+         State('sim-service-mean', 'value'),
          State('sim-service-std', 'value'),
          State('sim-num-berths', 'value'),
          State('sim-max-anchor', 'value'),
          State('sim-duration-days', 'value')],
         prevent_initial_call='initial_duplicate'
     )
-    def run_sensitivity_analysis(n_clicks, service_mean, service_std,
+    def run_sensitivity_analysis(n_clicks, strategy, service_mean, service_std,
                                   num_berths, max_anchor, duration_days):
         """运行敏感性分析"""
-        _debug(f'run_sensitivity_analysis触发 n_clicks={n_clicks}')
+        _debug(f'run_sensitivity_analysis触发 n_clicks={n_clicks}, strategy={strategy}')
 
         ef = empty_figure('点击"敏感性分析"按钮开始分析')
 
@@ -1450,6 +1666,8 @@ def register_callbacks(app):
             duration_days = int(duration_days) if duration_days else 30
             sim_duration = duration_days * 24.0
 
+            strat = strategy if strategy in [STRATEGY_FCFS, STRATEGY_SJF, STRATEGY_LWF] else STRATEGY_FCFS
+
             arrival_means = list(range(4, 17, 2))
 
             simulator = ShipQueueSimulator()
@@ -1460,7 +1678,8 @@ def register_callbacks(app):
                 num_berths=num_berths,
                 max_anchor=max_anchor,
                 sim_duration=sim_duration,
-                base_seed=np.random.randint(1, 9999)
+                base_seed=np.random.randint(1, 9999),
+                strategy=strat
             )
 
             S.sensitivity_result = sensitivity_df
@@ -1470,3 +1689,141 @@ def register_callbacks(app):
         except Exception as e:
             traceback.print_exc()
             return empty_figure(f'敏感性分析失败: {str(e)[:50]}'), []
+
+    # =============================================
+    # 回调13: 回放播放按钮
+    # =============================================
+    @app.callback(
+        Output('replay-interval', 'disabled'),
+        Output('replay-play-btn', 'color'),
+        [Input('replay-play-btn', 'n_clicks'),
+         Input('replay-pause-btn', 'n_clicks')],
+        prevent_initial_call=False
+    )
+    def replay_play_pause(play_clicks, pause_clicks):
+        """回放播放/暂停控制"""
+        ctx = callback_context
+        triggered = ctx.triggered_id
+
+        if triggered == 'replay-play-btn' and play_clicks and play_clicks > 0:
+            S.replay_playing = True
+            return False, 'success'
+        elif triggered == 'replay-pause-btn' and pause_clicks and pause_clicks > 0:
+            S.replay_playing = False
+            return True, 'success'
+
+        return True, 'success'
+
+    # =============================================
+    # 回调14: 回放速度选择
+    # =============================================
+    @app.callback(
+        Output('replay-interval', 'interval'),
+        [Input('replay-speed', 'value')],
+        prevent_initial_call=False
+    )
+    def replay_speed_change(speed):
+        """调整回放速度"""
+        if speed is None:
+            speed = 1
+        S.replay_speed = speed
+        base_interval = 200
+        return int(base_interval / speed)
+
+    # =============================================
+    # 回调15: 回放定时器 - 自动推进时间
+    # =============================================
+    @app.callback(
+        Output('sim-timeline-chart', 'figure', allow_duplicate=True),
+        Output('sim-berth-gantt', 'figure', allow_duplicate=True),
+        Output('sim-wait-histogram', 'figure', allow_duplicate=True),
+        Output('sim-avg-wait', 'children', allow_duplicate=True),
+        Output('sim-max-wait', 'children', allow_duplicate=True),
+        Output('sim-berth-util', 'children', allow_duplicate=True),
+        Output('sim-avg-service', 'children', allow_duplicate=True),
+        Output('sim-throughput', 'children', allow_duplicate=True),
+        Output('sim-reject-rate', 'children', allow_duplicate=True),
+        Output('sim-card-avg-wait', 'style', allow_duplicate=True),
+        Output('sim-card-reject', 'style', allow_duplicate=True),
+        Output('replay-slider', 'value', allow_duplicate=True),
+        Output('replay-time-label', 'children', allow_duplicate=True),
+        [Input('replay-interval', 'n_intervals')],
+        prevent_initial_call='initial_duplicate'
+    )
+    def replay_tick(n_intervals):
+        """回放定时器回调 - 每次触发推进时间"""
+        if not S.replay_playing or S.simulation_result is None:
+            return tuple([no_update] * 13)
+
+        try:
+            sim_duration = S.simulation_result.params.get('sim_duration', 0)
+            step = sim_duration / 200.0
+
+            new_time = S.replay_current_time + step
+            if new_time >= sim_duration:
+                new_time = sim_duration
+                S.replay_playing = False
+
+            S.replay_current_time = new_time
+
+            result = _format_simulation_results(S.simulation_result, current_time=new_time)
+
+            timeline_fig, berth_gantt_fig, wait_hist_fig = result[0], result[1], result[2]
+            avg_wait, max_wait, berth_util, avg_service, throughput, reject_rate = result[3:9]
+            avg_wait_style, reject_style = result[9], result[10]
+            slider_val = result[15]
+            time_label = result[16]
+
+            return (
+                timeline_fig, berth_gantt_fig, wait_hist_fig,
+                avg_wait, max_wait, berth_util, avg_service, throughput, reject_rate,
+                avg_wait_style, reject_style,
+                slider_val, time_label
+            )
+        except Exception as e:
+            traceback.print_exc()
+            return tuple([no_update] * 13)
+
+    # =============================================
+    # 回调16: 回放滑块拖动 - 跳转到指定时间
+    # =============================================
+    @app.callback(
+        Output('sim-timeline-chart', 'figure', allow_duplicate=True),
+        Output('sim-berth-gantt', 'figure', allow_duplicate=True),
+        Output('sim-wait-histogram', 'figure', allow_duplicate=True),
+        Output('sim-avg-wait', 'children', allow_duplicate=True),
+        Output('sim-max-wait', 'children', allow_duplicate=True),
+        Output('sim-berth-util', 'children', allow_duplicate=True),
+        Output('sim-avg-service', 'children', allow_duplicate=True),
+        Output('sim-throughput', 'children', allow_duplicate=True),
+        Output('sim-reject-rate', 'children', allow_duplicate=True),
+        Output('sim-card-avg-wait', 'style', allow_duplicate=True),
+        Output('sim-card-reject', 'style', allow_duplicate=True),
+        Output('replay-time-label', 'children', allow_duplicate=True),
+        [Input('replay-slider', 'value')],
+        prevent_initial_call='initial_duplicate'
+    )
+    def replay_slider_change(value):
+        """回放滑块拖动 - 手动跳转"""
+        if S.simulation_result is None or not S.replay_enabled:
+            return tuple([no_update] * 12)
+
+        try:
+            S.replay_current_time = float(value) if value else 0.0
+
+            result = _format_simulation_results(S.simulation_result, current_time=S.replay_current_time)
+
+            timeline_fig, berth_gantt_fig, wait_hist_fig = result[0], result[1], result[2]
+            avg_wait, max_wait, berth_util, avg_service, throughput, reject_rate = result[3:9]
+            avg_wait_style, reject_style = result[9], result[10]
+            time_label = result[16]
+
+            return (
+                timeline_fig, berth_gantt_fig, wait_hist_fig,
+                avg_wait, max_wait, berth_util, avg_service, throughput, reject_rate,
+                avg_wait_style, reject_style,
+                time_label
+            )
+        except Exception as e:
+            traceback.print_exc()
+            return tuple([no_update] * 12)

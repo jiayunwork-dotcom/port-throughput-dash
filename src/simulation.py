@@ -1,6 +1,11 @@
 """
 船舶排队调度离散事件仿真引擎
 模拟船舶从到港锚地等待 → 分配泊位 → 装卸完成离港的全流程
+
+支持三种泊位分配策略:
+- FCFS: 先到先服务 (First Come First Served)
+- SJF: 最短作业优先 (Shortest Job First)，预估装卸时间最短的船优先
+- LWF: 最长等待优先 (Longest Wait First)，等待时间最长的船优先
 """
 
 import heapq
@@ -8,6 +13,17 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
+
+STRATEGY_FCFS = 'FCFS'
+STRATEGY_SJF = 'SJF'
+STRATEGY_LWF = 'LWF'
+STRATEGY_ALL = 'ALL'
+
+STRATEGY_LABELS = {
+    STRATEGY_FCFS: '先到先服务 (FCFS)',
+    STRATEGY_SJF: '最短作业优先 (SJF)',
+    STRATEGY_LWF: '最长等待优先 (LWF)',
+}
 
 
 @dataclass
@@ -21,6 +37,7 @@ class ShipRecord:
     berth_id: int = -1
     service_time: float = 0.0
     rejected: bool = False
+    estimated_service_time: float = 0.0
 
 
 @dataclass
@@ -45,6 +62,8 @@ class SimulationResult:
     berth_occupancy: pd.DataFrame = None
     stats: Dict = field(default_factory=dict)
     params: Dict = field(default_factory=dict)
+    strategy: str = STRATEGY_FCFS
+    berth_timeline: Dict = field(default_factory=dict)
 
 
 class ShipQueueSimulator:
@@ -60,7 +79,8 @@ class ShipQueueSimulator:
             service_std: float = 6.0,
             num_berths: int = 4,
             max_anchor: int = 20,
-            sim_duration: float = 720.0) -> SimulationResult:
+            sim_duration: float = 720.0,
+            strategy: str = STRATEGY_FCFS) -> SimulationResult:
         """
         运行一次仿真
 
@@ -71,6 +91,7 @@ class ShipQueueSimulator:
             num_berths: 泊位数量
             max_anchor: 最大锚地等待容量
             sim_duration: 仿真时长 (小时)
+            strategy: 泊位分配策略 (FCFS/SJF/LWF)
 
         Returns:
             SimulationResult 仿真结果
@@ -105,9 +126,11 @@ class ShipQueueSimulator:
                 break
 
             if event.event_type == 'ship_arrive':
+                est_service = max(1.0, rng.normal(service_mean, service_std))
                 ship = ShipRecord(
                     ship_id=event.ship_id,
-                    arrival_time=current_time
+                    arrival_time=current_time,
+                    estimated_service_time=est_service
                 )
                 ships.append(ship)
 
@@ -126,7 +149,7 @@ class ShipQueueSimulator:
 
                 if not assigned:
                     if len(anchor_queue) < max_anchor:
-                        anchor_queue.append(ship.ship_id)
+                        self._enqueue_ship(anchor_queue, ships, ship, strategy, current_time)
                         ship.wait_time = 0.0
                     else:
                         ship.rejected = True
@@ -147,7 +170,7 @@ class ShipQueueSimulator:
                 berth_available[berth_id] = True
 
                 if anchor_queue:
-                    next_ship_id = anchor_queue.pop(0)
+                    next_ship_id = self._dequeue_ship(anchor_queue, ships, strategy, current_time)
                     next_ship = next((s for s in ships if s.ship_id == next_ship_id), None)
                     if next_ship is not None:
                         self._assign_berth(next_ship, berth_id, current_time, service_mean, service_std, rng)
@@ -200,22 +223,20 @@ class ShipQueueSimulator:
             min(berth_end_times[i], sim_duration) - 0 if berth_end_times[i] > 0 else 0
             for i in range(num_berths)
         )
+        berth_timeline_saved = {}
         for berth_id, intervals in berth_timeline.items():
             total_busy = 0
             for start, end, _ in intervals:
                 if start < sim_duration:
                     total_busy += min(end, sim_duration) - start
             berth_util = total_busy / max(1, sim_duration)
-            berth_timeline[berth_id] = (intervals, berth_util)
+            berth_timeline_saved[berth_id] = (intervals, berth_util)
 
         total_berth_hours = num_berths * sim_duration
         total_busy_all = 0
         for berth_id in range(num_berths):
-            intervals = berth_timeline.get(berth_id, ([], 0))
-            if isinstance(intervals, tuple):
-                interval_list = intervals[0]
-            else:
-                interval_list = intervals
+            intervals_data = berth_timeline_saved.get(berth_id, ([], 0))
+            interval_list = intervals_data[0]
             for start, end, _ in interval_list:
                 if start < sim_duration:
                     total_busy_all += min(end, sim_duration) - start
@@ -246,10 +267,79 @@ class ShipQueueSimulator:
                 'num_berths': num_berths,
                 'max_anchor': max_anchor,
                 'sim_duration': sim_duration,
-            }
+            },
+            strategy=strategy,
+            berth_timeline=berth_timeline_saved
         )
 
         return result
+
+    def _enqueue_ship(self, anchor_queue: List[int], ships: List[ShipRecord],
+                      ship: ShipRecord, strategy: str, current_time: float):
+        """
+        根据策略将船舶加入等待队列
+        """
+        if strategy == STRATEGY_FCFS:
+            anchor_queue.append(ship.ship_id)
+        elif strategy == STRATEGY_SJF:
+            inserted = False
+            for i, sid in enumerate(anchor_queue):
+                q_ship = next((s for s in ships if s.ship_id == sid), None)
+                if q_ship and ship.estimated_service_time < q_ship.estimated_service_time:
+                    anchor_queue.insert(i, ship.ship_id)
+                    inserted = True
+                    break
+            if not inserted:
+                anchor_queue.append(ship.ship_id)
+        elif strategy == STRATEGY_LWF:
+            inserted = False
+            for i, sid in enumerate(anchor_queue):
+                q_ship = next((s for s in ships if s.ship_id == sid), None)
+                if q_ship:
+                    q_wait = current_time - q_ship.arrival_time
+                    s_wait = current_time - ship.arrival_time
+                    if s_wait > q_wait:
+                        anchor_queue.insert(i, ship.ship_id)
+                        inserted = True
+                        break
+            if not inserted:
+                anchor_queue.append(ship.ship_id)
+        else:
+            anchor_queue.append(ship.ship_id)
+
+    def _dequeue_ship(self, anchor_queue: List[int], ships: List[ShipRecord],
+                      strategy: str, current_time: float) -> Optional[int]:
+        """
+        根据策略从等待队列中选择下一艘船
+        返回选中的船舶ID
+        """
+        if not anchor_queue:
+            return None
+
+        if strategy == STRATEGY_FCFS:
+            return anchor_queue.pop(0)
+        elif strategy == STRATEGY_SJF:
+            min_idx = 0
+            min_time = float('inf')
+            for i, sid in enumerate(anchor_queue):
+                q_ship = next((s for s in ships if s.ship_id == sid), None)
+                if q_ship and q_ship.estimated_service_time < min_time:
+                    min_time = q_ship.estimated_service_time
+                    min_idx = i
+            return anchor_queue.pop(min_idx)
+        elif strategy == STRATEGY_LWF:
+            max_idx = 0
+            max_wait = -1
+            for i, sid in enumerate(anchor_queue):
+                q_ship = next((s for s in ships if s.ship_id == sid), None)
+                if q_ship:
+                    wait_t = current_time - q_ship.arrival_time
+                    if wait_t > max_wait:
+                        max_wait = wait_t
+                        max_idx = i
+            return anchor_queue.pop(max_idx)
+        else:
+            return anchor_queue.pop(0)
 
     def _assign_berth(self, ship: ShipRecord, berth_id: int, current_time: float,
                       service_mean: float, service_std: float, rng: np.random.Generator):
@@ -295,7 +385,8 @@ class ShipQueueSimulator:
                                  num_berths: int = 4,
                                  max_anchor: int = 20,
                                  sim_duration: float = 720.0,
-                                 base_seed: int = 42) -> pd.DataFrame:
+                                 base_seed: int = 42,
+                                 strategy: str = STRATEGY_FCFS) -> pd.DataFrame:
         """
         敏感性分析：批量运行不同到港间隔下的仿真
 
@@ -307,6 +398,7 @@ class ShipQueueSimulator:
             max_anchor: 最大锚地容量
             sim_duration: 仿真时长
             base_seed: 基础随机种子
+            strategy: 泊位分配策略
 
         Returns:
             DataFrame 包含各配置下的指标
@@ -321,7 +413,8 @@ class ShipQueueSimulator:
                 service_std=service_std,
                 num_berths=num_berths,
                 max_anchor=max_anchor,
-                sim_duration=sim_duration
+                sim_duration=sim_duration,
+                strategy=strategy
             )
 
             results.append({
@@ -336,3 +429,85 @@ class ShipQueueSimulator:
             })
 
         return pd.DataFrame(results)
+
+    @staticmethod
+    def get_stats_at_time(result: SimulationResult, time_point: float) -> Dict:
+        """
+        计算截至某一时刻的统计指标（用于仿真回放）
+
+        Args:
+            result: 仿真结果
+            time_point: 时间点 (小时)
+
+        Returns:
+            截至该时刻的统计指标字典
+        """
+        sim_duration = result.params.get('sim_duration', 0)
+        num_berths = result.params.get('num_berths', 0)
+
+        completed_ships = [
+            s for s in result.ships
+            if not s.rejected
+            and s.departure_time > 0
+            and s.departure_time <= time_point
+        ]
+
+        in_service_ships = [
+            s for s in result.ships
+            if not s.rejected
+            and s.start_time > 0
+            and s.start_time <= time_point
+            and s.departure_time > time_point
+        ]
+
+        waiting_ships = [
+            s for s in result.ships
+            if not s.rejected
+            and s.arrival_time <= time_point
+            and (s.start_time == 0 or s.start_time > time_point)
+        ]
+
+        all_served = completed_ships + in_service_ships
+        wait_times = []
+        for s in all_served:
+            actual_start = min(s.start_time, time_point) if s.start_time > 0 else time_point
+            wt = actual_start - s.arrival_time
+            if wt > 0:
+                wait_times.append(wt)
+
+        avg_wait = float(np.mean(wait_times)) if wait_times else 0.0
+        max_wait = float(np.max(wait_times)) if wait_times else 0.0
+
+        total_busy = 0.0
+        for s in result.ships:
+            if s.rejected or s.start_time == 0:
+                continue
+            if s.start_time >= time_point:
+                continue
+            start = s.start_time
+            end = min(s.departure_time, time_point) if s.departure_time > 0 else time_point
+            if end > start:
+                total_busy += end - start
+
+        total_berth_hours = num_berths * time_point
+        berth_util = total_busy / total_berth_hours if total_berth_hours > 0 else 0.0
+
+        throughput = len(completed_ships)
+
+        rejected_before = sum(
+            1 for s in result.ships
+            if s.rejected and s.arrival_time <= time_point
+        )
+
+        return {
+            'avg_wait_time': avg_wait,
+            'max_wait_time': max_wait,
+            'avg_berth_utilization': float(berth_util),
+            'throughput': throughput,
+            'total_arrivals': sum(
+                1 for s in result.ships if s.arrival_time <= time_point
+            ),
+            'rejected_count': rejected_before,
+            'waiting_count': len(waiting_ships),
+            'in_service_count': len(in_service_ships),
+        }

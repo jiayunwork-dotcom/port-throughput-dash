@@ -46,6 +46,15 @@ kpi_cache: dict = None
 simulation_result = None
 sensitivity_result = None
 
+# 多策略对比仿真结果 {strategy: SimulationResult}
+multi_strategy_results: dict = None
+
+# 回放状态
+replay_enabled: bool = False
+replay_current_time: float = 0.0
+replay_playing: bool = False
+replay_speed: float = 1.0
+
 # ============================================
 # 初始化标志
 # ============================================

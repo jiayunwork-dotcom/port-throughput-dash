@@ -927,6 +927,23 @@ def make_simulation_section():
                     dbc.CardBody([
                         dbc.Row([
                             dbc.Col([
+                                html.Label('泊位分配策略', className='fw-bold'),
+                                dcc.Dropdown(
+                                    id='sim-strategy',
+                                    options=[
+                                        {'label': '先到先服务 (FCFS)', 'value': 'FCFS'},
+                                        {'label': '最短作业优先 (SJF)', 'value': 'SJF'},
+                                        {'label': '最长等待优先 (LWF)', 'value': 'LWF'},
+                                        {'label': '三策略对比', 'value': 'ALL'},
+                                    ],
+                                    value='FCFS',
+                                    clearable=False,
+                                    className='mb-2'
+                                ),
+                            ], md=12),
+                        ], className='mb-3'),
+                        dbc.Row([
+                            dbc.Col([
                                 html.Label('船舶到港间隔均值 (小时)', className='fw-bold'),
                                 html.Small('指数分布', className='text-muted ms-2'),
                                 dcc.Input(
@@ -1015,74 +1032,132 @@ def make_simulation_section():
             ], md=3),
 
             dbc.Col([
-                dbc.Row([
-                    dbc.Col(dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                html.I(className='fas fa-clock me-2 text-info'),
-                                html.Span('平均等待时长', className='text-muted small')
-                            ]),
-                            html.H3(id='sim-avg-wait', className='fw-bold mt-1',
-                                    style={'color': '#3182ce'}),
-                            html.Small('小时', className='text-muted'),
-                        ])
-                    ], id='sim-card-avg-wait', className='shadow-sm'), md=4),
-                    dbc.Col(dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                html.I(className='fas fa-hourglass-end me-2 text-warning'),
-                                html.Span('最大等待时长', className='text-muted small')
-                            ]),
-                            html.H3(id='sim-max-wait', className='fw-bold mt-1 text-warning'),
-                            html.Small('小时', className='text-muted'),
-                        ])
-                    ], className='shadow-sm'), md=4),
-                    dbc.Col(dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                html.I(className='fas fa-anchor me-2 text-success'),
-                                html.Span('泊位平均利用率', className='text-muted small')
-                            ]),
-                            html.H3(id='sim-berth-util', className='fw-bold mt-1 text-success'),
-                            html.Small('%', className='text-muted'),
-                        ])
-                    ], className='shadow-sm'), md=4),
-                ], className='g-3 mb-3'),
-                dbc.Row([
-                    dbc.Col(dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                html.I(className='fas fa-cogs me-2 text-primary'),
-                                html.Span('平均服务时间', className='text-muted small')
-                            ]),
-                            html.H3(id='sim-avg-service', className='fw-bold mt-1',
-                                    style={'color': '#2b6cb0'}),
-                            html.Small('小时', className='text-muted'),
-                        ])
-                    ], className='shadow-sm'), md=4),
-                    dbc.Col(dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                html.I(className='fas fa-ship me-2 text-secondary'),
-                                html.Span('吞吐量', className='text-muted small')
-                            ]),
-                            html.H3(id='sim-throughput', className='fw-bold mt-1 text-secondary'),
-                            html.Small('艘', className='text-muted'),
-                        ])
-                    ], className='shadow-sm'), md=4),
-                    dbc.Col(dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                html.I(className='fas fa-ban me-2 text-danger'),
-                                html.Span('拒绝率', className='text-muted small')
-                            ]),
-                            html.H3(id='sim-reject-rate', className='fw-bold mt-1 text-danger'),
-                            html.Small('%', className='text-muted'),
-                        ])
-                    ], id='sim-card-reject', className='shadow-sm'), md=4),
-                ], className='g-3 mb-4'),
+                html.Div(id='sim-stats-container', children=[
+                    dbc.Row([
+                        dbc.Col(dbc.Card([
+                            dbc.CardBody([
+                                html.Div([
+                                    html.I(className='fas fa-clock me-2 text-info'),
+                                    html.Span('平均等待时长', className='text-muted small')
+                                ]),
+                                html.H3(id='sim-avg-wait', className='fw-bold mt-1',
+                                        style={'color': '#3182ce'}),
+                                html.Small('小时', className='text-muted'),
+                            ])
+                        ], id='sim-card-avg-wait', className='shadow-sm'), md=4),
+                        dbc.Col(dbc.Card([
+                            dbc.CardBody([
+                                html.Div([
+                                    html.I(className='fas fa-hourglass-end me-2 text-warning'),
+                                    html.Span('最大等待时长', className='text-muted small')
+                                ]),
+                                html.H3(id='sim-max-wait', className='fw-bold mt-1 text-warning'),
+                                html.Small('小时', className='text-muted'),
+                            ])
+                        ], className='shadow-sm'), md=4),
+                        dbc.Col(dbc.Card([
+                            dbc.CardBody([
+                                html.Div([
+                                    html.I(className='fas fa-anchor me-2 text-success'),
+                                    html.Span('泊位平均利用率', className='text-muted small')
+                                ]),
+                                html.H3(id='sim-berth-util', className='fw-bold mt-1 text-success'),
+                                html.Small('%', className='text-muted'),
+                            ])
+                        ], className='shadow-sm'), md=4),
+                    ], className='g-3 mb-3'),
+                    dbc.Row([
+                        dbc.Col(dbc.Card([
+                            dbc.CardBody([
+                                html.Div([
+                                    html.I(className='fas fa-cogs me-2 text-primary'),
+                                    html.Span('平均服务时间', className='text-muted small')
+                                ]),
+                                html.H3(id='sim-avg-service', className='fw-bold mt-1',
+                                        style={'color': '#2b6cb0'}),
+                                html.Small('小时', className='text-muted'),
+                            ])
+                        ], className='shadow-sm'), md=4),
+                        dbc.Col(dbc.Card([
+                            dbc.CardBody([
+                                html.Div([
+                                    html.I(className='fas fa-ship me-2 text-secondary'),
+                                    html.Span('吞吐量', className='text-muted small')
+                                ]),
+                                html.H3(id='sim-throughput', className='fw-bold mt-1 text-secondary'),
+                                html.Small('艘', className='text-muted'),
+                            ])
+                        ], className='shadow-sm'), md=4),
+                        dbc.Col(dbc.Card([
+                            dbc.CardBody([
+                                html.Div([
+                                    html.I(className='fas fa-ban me-2 text-danger'),
+                                    html.Span('拒绝率', className='text-muted small')
+                                ]),
+                                html.H3(id='sim-reject-rate', className='fw-bold mt-1 text-danger'),
+                                html.Small('%', className='text-muted'),
+                            ])
+                        ], id='sim-card-reject', className='shadow-sm'), md=4),
+                    ], className='g-3 mb-4'),
+                ]),
+
+                html.Div(id='sim-multi-stats-container', style={'display': 'none'}, children=[]),
             ], md=9),
         ]),
+
+        html.Div(id='sim-replay-controls', style={'display': 'none'}, children=[
+            dbc.Card([
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Button(
+                                html.I(className='fas fa-play'),
+                                id='replay-play-btn',
+                                color='success',
+                                size='sm',
+                                className='me-2'
+                            ),
+                            dbc.Button(
+                                html.I(className='fas fa-pause'),
+                                id='replay-pause-btn',
+                                color='secondary',
+                                size='sm',
+                                className='me-2'
+                            ),
+                            html.Span('倍速:', className='me-2'),
+                            dcc.Dropdown(
+                                id='replay-speed',
+                                options=[
+                                    {'label': '1x', 'value': 1},
+                                    {'label': '2x', 'value': 2},
+                                    {'label': '4x', 'value': 4},
+                                ],
+                                value=1,
+                                clearable=False,
+                                style={'width': '80px', 'display': 'inline-block'}
+                            ),
+                        ], md=3, className='d-flex align-items-center'),
+                        dbc.Col([
+                            dcc.Slider(
+                                id='replay-slider',
+                                min=0,
+                                max=100,
+                                value=0,
+                                step=0.1,
+                                tooltip={'placement': 'bottom', 'always_visible': True},
+                                updatemode='drag'
+                            ),
+                        ], md=7),
+                        dbc.Col([
+                            html.Div(id='replay-time-label',
+                                     className='text-center fw-bold text-primary'),
+                        ], md=2, className='d-flex align-items-center justify-content-center'),
+                    ]),
+                ]),
+            ], className='mb-4'),
+        ]),
+
+        dcc.Interval(id='replay-interval', interval=200, disabled=True, n_intervals=0),
 
         dbc.Row([
             dbc.Col([

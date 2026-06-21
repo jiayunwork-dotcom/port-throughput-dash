@@ -864,3 +864,295 @@ class ChartBuilder:
             xlabel='船舶到港间隔均值 (小时)', ylabel='',
             height=450,
             showlegend=True, legend_orientation='h')
+
+    @classmethod
+    def create_multi_strategy_timeline(cls, results: dict) -> go.Figure:
+        """
+        创建三策略对比时间轴折线图
+        results: {strategy_name: SimulationResult}
+        """
+        if not results:
+            return cls.create_simulation_timeline_chart(None)
+
+        fig = go.Figure()
+
+        strategy_colors = {
+            'FCFS': cls.PALETTE[0],
+            'SJF': cls.PALETTE[1],
+            'LWF': cls.PALETTE[3],
+        }
+
+        strategy_names = {
+            'FCFS': '先到先服务 (FCFS)',
+            'SJF': '最短作业优先 (SJF)',
+            'LWF': '最长等待优先 (LWF)',
+        }
+
+        for strategy, result in results.items():
+            color = strategy_colors.get(strategy, cls.PALETTE[0])
+            name = strategy_names.get(strategy, strategy)
+            timeline_df = result.timeline_data
+
+            if timeline_df is None or timeline_df.empty:
+                continue
+
+            fig.add_trace(go.Scatter(
+                x=timeline_df['时间_小时'], y=timeline_df['锚地等待数'],
+                name=f'{name} - 锚地等待', mode='lines',
+                line=dict(color=color, width=2, dash='solid'),
+                opacity=0.9
+            ))
+            fig.add_trace(go.Scatter(
+                x=timeline_df['时间_小时'], y=timeline_df['在泊作业数'],
+                name=f'{name} - 在泊作业', mode='lines',
+                line=dict(color=color, width=2.5, dash='dot'),
+                opacity=0.9
+            ))
+
+        return cls._update_layout(fig,
+            title='三策略对比：锚地等待与在泊作业船舶数量变化',
+            xlabel='仿真时间 (小时)', ylabel='船舶数量 (艘)',
+            height=450,
+            showlegend=True, legend_orientation='h')
+
+    @classmethod
+    def create_multi_strategy_wait_histogram(cls, results: dict) -> go.Figure:
+        """
+        创建三策略对比等待时长分组柱状图
+        results: {strategy_name: SimulationResult}
+        """
+        if not results:
+            return cls.create_wait_time_histogram(None)
+
+        strategy_names = {
+            'FCFS': 'FCFS',
+            'SJF': 'SJF',
+            'LWF': 'LWF',
+        }
+
+        strategy_colors = {
+            'FCFS': cls.PALETTE[0],
+            'SJF': cls.PALETTE[1],
+            'LWF': cls.PALETTE[3],
+        }
+
+        all_wait_times = {}
+        max_wait = 0
+        for strategy, result in results.items():
+            wait_times = [s.start_time - s.arrival_time for s in result.ships
+                           if hasattr(s, 'start_time') and s.start_time > 0
+                           and hasattr(s, 'departure_time') and s.departure_time > 0
+                           and not getattr(s, 'rejected', False)]
+            all_wait_times[strategy] = wait_times
+            if wait_times:
+                max_wait = max(max_wait, max(wait_times))
+
+        if not any(all_wait_times.values()):
+            fig = go.Figure()
+            fig.add_annotation(text='无等待数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='等待时长分布对比', height=400)
+
+        num_bins = 20
+        bin_width = max_wait / num_bins if max_wait > 0 else 1
+        bins = [i * bin_width for i in range(num_bins + 1)]
+
+        fig = go.Figure()
+
+        for strategy, wait_times in all_wait_times.items():
+            color = strategy_colors.get(strategy, cls.PALETTE[0])
+            name = strategy_names.get(strategy, strategy)
+
+            counts, bin_edges = np.histogram(wait_times, bins=bins)
+            bin_centers = [(bin_edges[i] + bin_edges[i + 1]) / 2 for i in range(len(bin_edges) - 1)]
+
+            fig.add_trace(go.Bar(
+                x=bin_centers,
+                y=counts,
+                name=name,
+                marker_color=color,
+                opacity=0.8,
+                width=bin_width * 0.28,
+            ))
+
+        fig.update_layout(barmode='group')
+
+        return cls._update_layout(fig,
+            title='三策略对比：船舶等待时长分布',
+            xlabel='等待时长 (小时)', ylabel='船舶数量 (艘)',
+            height=400,
+            showlegend=True, legend_orientation='h')
+
+    @classmethod
+    def create_replay_timeline(cls, timeline_df: pd.DataFrame, current_time: float) -> go.Figure:
+        """
+        创建带回放时间标记的时间轴图表
+        """
+        if timeline_df is None or timeline_df.empty:
+            return cls.create_simulation_timeline_chart(None)
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=timeline_df['时间_小时'], y=timeline_df['锚地等待数'],
+            name='锚地等待数', mode='lines',
+            line=dict(color=cls.COLORS['warning'], width=2.5),
+            fill='tozeroy', fillcolor='rgba(214, 158, 46, 0.15)',
+        ))
+        fig.add_trace(go.Scatter(
+            x=timeline_df['时间_小时'], y=timeline_df['在泊作业数'],
+            name='在泊作业数', mode='lines',
+            line=dict(color=cls.COLORS['primary'], width=2.5),
+            fill='tozeroy', fillcolor='rgba(26, 54, 93, 0.15)',
+        ))
+
+        fig.add_vline(
+            x=current_time,
+            line=dict(color=cls.COLORS['danger'], width=3),
+            annotation_text=f'当前: {current_time:.1f}h',
+            annotation_position='top right',
+            annotation_font=dict(color=cls.COLORS['danger'], size=12),
+        )
+
+        return cls._update_layout(fig,
+            title='锚地等待与在泊作业船舶数量变化（回放中）',
+            xlabel='仿真时间 (小时)', ylabel='船舶数量 (艘)',
+            height=400)
+
+    @classmethod
+    def create_replay_berth_gantt(cls, berth_df: pd.DataFrame, sim_duration: float,
+                                   current_time: float) -> go.Figure:
+        """
+        创建带回放效果的泊位甘特图
+        未发生的占用色块显示为半透明
+        """
+        if berth_df is None or berth_df.empty:
+            return cls.create_simulation_berth_gantt(None, sim_duration)
+
+        df = berth_df.copy()
+        berths = sorted(df['泊位编号'].unique())
+
+        def get_color(teu, is_past):
+            opacity = 1.0 if is_past else 0.25
+            if teu < 2000:
+                base = '#90cdf4'
+            elif teu <= 5000:
+                base = '#3182ce'
+            else:
+                base = '#1a365d'
+            return base, opacity
+
+        fig = go.Figure()
+
+        for berth in berths:
+            berth_vessels = df[df['泊位编号'] == berth]
+            for _, row in berth_vessels.iterrows():
+                duration = row['结束时间'] - row['开始时间']
+                is_past = row['结束时间'] <= current_time
+                is_current = row['开始时间'] <= current_time < row['结束时间']
+
+                color, opacity = get_color(row['载箱量TEU'], is_past)
+
+                if is_current:
+                    actual_duration = current_time - row['开始时间']
+                    remaining_duration = row['结束时间'] - current_time
+
+                    hover_text = (
+                        f"<b>{row['船名']}</b><br>"
+                        f"泊位: {berth}<br>"
+                        f"开始: {row['开始时间']:.1f} 小时<br>"
+                        f"结束: {row['结束时间']:.1f} 小时<br>"
+                        f"载箱量: {row['载箱量TEU']:,} TEU<br>"
+                        f"作业时长: {duration:.1f} 小时<br>"
+                        f"<span style='color:green'>进度: {(actual_duration/duration)*100:.1f}%</span>"
+                    )
+
+                    fig.add_trace(go.Bar(
+                        x=[actual_duration],
+                        y=[berth],
+                        base=[row['开始时间']],
+                        orientation='h',
+                        marker=dict(
+                            color=color,
+                            line=dict(color='white', width=1)
+                        ),
+                        hovertemplate=hover_text,
+                        name=berth,
+                        showlegend=False,
+                        width=0.6
+                    ))
+                    fig.add_trace(go.Bar(
+                        x=[remaining_duration],
+                        y=[berth],
+                        base=[current_time],
+                        orientation='h',
+                        marker=dict(
+                            color=color,
+                            opacity=0.3,
+                            line=dict(color='white', width=1)
+                        ),
+                        hovertemplate=hover_text,
+                        name=berth,
+                        showlegend=False,
+                        width=0.6
+                    ))
+                else:
+                    hover_text = (
+                        f"<b>{row['船名']}</b><br>"
+                        f"泊位: {berth}<br>"
+                        f"开始: {row['开始时间']:.1f} 小时<br>"
+                        f"结束: {row['结束时间']:.1f} 小时<br>"
+                        f"载箱量: {row['载箱量TEU']:,} TEU<br>"
+                        f"作业时长: {duration:.1f} 小时"
+                    )
+                    if not is_past:
+                        hover_text += "<br><i>尚未开始</i>"
+
+                    fig.add_trace(go.Bar(
+                        x=[duration],
+                        y=[berth],
+                        base=[row['开始时间']],
+                        orientation='h',
+                        marker=dict(
+                            color=color,
+                            opacity=opacity,
+                            line=dict(color='white', width=1)
+                        ),
+                        hovertemplate=hover_text,
+                        name=berth,
+                        showlegend=False,
+                        width=0.6
+                    ))
+
+        fig.update_layout(
+            barmode='overlay',
+            xaxis=dict(
+                title='仿真时间 (小时)',
+                showgrid=True,
+                gridcolor='#f0f0f0',
+            ),
+            yaxis=dict(
+                title='泊位',
+                showgrid=True,
+                gridcolor='#f0f0f0',
+                categoryorder='array',
+                categoryarray=list(reversed(berths))
+            ),
+            hovermode='closest'
+        )
+
+        fig.add_vline(
+            x=current_time,
+            line=dict(color=cls.COLORS['danger'], width=3),
+            annotation_text=f'当前: {current_time:.1f}h',
+            annotation_position='top right',
+            annotation_font=dict(color=cls.COLORS['danger'], size=12),
+        )
+
+        if sim_duration:
+            fig.update_xaxes(range=[0, sim_duration])
+
+        return cls._update_layout(fig,
+            title='仿真泊位甘特图（回放中 - 半透明为未发生）',
+            xlabel='时间 (小时)', ylabel='泊位编号',
+            height=400, showlegend=False)
