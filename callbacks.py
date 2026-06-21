@@ -998,3 +998,222 @@ def register_callbacks(app):
             return None, html.Span(
                 f'✗ 导出失败: {str(e)[:60]}', className='text-danger'
             )
+
+    # =============================================
+    # 辅助: 检测泊位冲突
+    # =============================================
+    def _detect_berth_conflicts(vessel_df):
+        """检测同一泊位的时间重叠冲突"""
+        if vessel_df is None or vessel_df.empty:
+            return pd.DataFrame(), set()
+
+        df = vessel_df.copy()
+        df['到港时间'] = pd.to_datetime(df['到港时间'])
+        df['离港时间'] = pd.to_datetime(df['离港时间'])
+
+        conflicts = []
+        conflict_vessels = set()
+
+        berths = df['分配泊位编号'].unique()
+        for berth in berths:
+            berth_df = df[df['分配泊位编号'] == berth].sort_values('到港时间')
+            vessels = berth_df.to_dict('records')
+
+            for i in range(len(vessels)):
+                for j in range(i + 1, len(vessels)):
+                    v1 = vessels[i]
+                    v2 = vessels[j]
+
+                    overlap_start = max(v1['到港时间'], v2['到港时间'])
+                    overlap_end = min(v1['离港时间'], v2['离港时间'])
+
+                    if overlap_start < overlap_end:
+                        overlap_hours = (overlap_end - overlap_start).total_seconds() / 3600
+                        conflicts.append({
+                            '泊位号': berth,
+                            '船名A': v1['船名'],
+                            '船名B': v2['船名'],
+                            '重叠开始': overlap_start.strftime('%Y-%m-%d %H:%M'),
+                            '重叠结束': overlap_end.strftime('%Y-%m-%d %H:%M'),
+                            '重叠时长_小时': round(overlap_hours, 2)
+                        })
+                        conflict_vessels.add(v1['船名'])
+                        conflict_vessels.add(v2['船名'])
+
+        return pd.DataFrame(conflicts), conflict_vessels
+
+    # =============================================
+    # 辅助: 计算泊位效率指标
+    # =============================================
+    def _calculate_berth_efficiency(vessel_df):
+        """计算每个泊位的效率指标"""
+        if vessel_df is None or vessel_df.empty:
+            return pd.DataFrame()
+
+        df = vessel_df.copy()
+        df['到港时间'] = pd.to_datetime(df['到港时间'])
+        df['离港时间'] = pd.to_datetime(df['离港时间'])
+
+        results = []
+        berths = sorted(df['分配泊位编号'].unique())
+
+        for berth in berths:
+            berth_df = df[df['分配泊位编号'] == berth].sort_values('到港时间')
+
+            turnaround_times = []
+            for i in range(1, len(berth_df)):
+                prev_depart = berth_df.iloc[i - 1]['离港时间']
+                curr_arrive = berth_df.iloc[i]['到港时间']
+                gap = (curr_arrive - prev_depart).total_seconds() / 3600
+                if gap >= 0:
+                    turnaround_times.append(gap)
+
+            avg_turnaround = np.mean(turnaround_times) if turnaround_times else np.nan
+            total_vessels = len(berth_df)
+            total_teu = berth_df['载箱量TEU'].sum()
+
+            results.append({
+                '泊位编号': berth,
+                '平均周转时间_小时': round(avg_turnaround, 2) if not np.isnan(avg_turnaround) else 0,
+                '靠泊船次': total_vessels,
+                '累计装卸TEU': int(total_teu)
+            })
+
+        result_df = pd.DataFrame(results)
+        if not result_df.empty:
+            result_df = result_df.sort_values('平均周转时间_小时', ascending=True).reset_index(drop=True)
+
+        return result_df
+
+    # =============================================
+    # 回调10: 泊位调度甘特图 - 初始化日期 + 更新所有内容
+    # =============================================
+    @app.callback(
+        Output('berth-date-start', 'date'),
+        Output('berth-date-end', 'date'),
+        Output('berth-gantt-chart', 'figure'),
+        Output('berth-conflict-summary', 'children'),
+        Output('berth-conflict-table', 'data'),
+        Output('berth-efficiency-chart', 'figure'),
+        [Input('init-trigger', 'n_intervals'),
+         Input('app-data-store', 'data'),
+         Input('berth-date-start', 'date'),
+         Input('berth-date-end', 'date'),
+         Input('berth-quick-7d', 'n_clicks'),
+         Input('berth-quick-30d', 'n_clicks'),
+         Input('berth-quick-all', 'n_clicks')],
+        prevent_initial_call=False
+    )
+    def update_berth_dashboard(n_intervals, store_data, date_start, date_end,
+                                q7d, q30d, qall):
+        """更新泊位调度甘特图及相关面板"""
+        _debug(f'update_berth_dashboard触发 init={S.is_initialized()}')
+
+        ef_gantt = empty_figure('数据加载中...')
+        ef_eff = empty_figure('数据加载中...')
+        empty_summary = html.Span('加载中...', className='text-muted')
+        empty_data = []
+
+        if not S.is_initialized():
+            return (None, None, ef_gantt, empty_summary, empty_data, ef_eff)
+
+        try:
+            ctx = callback_context
+            triggered = ctx.triggered_id
+
+            vessel_df = S.vessel_df.copy()
+            vessel_df['到港时间'] = pd.to_datetime(vessel_df['到港时间'])
+            vessel_df['离港时间'] = pd.to_datetime(vessel_df['离港时间'])
+
+            min_date = vessel_df['到港时间'].min().date()
+            max_date = vessel_df['离港时间'].max().date()
+
+            def get_date_range_for_quick(days):
+                end = pd.Timestamp(max_date)
+                start = end - timedelta(days=days - 1)
+                return start.date(), end.date()
+
+            new_start = date_start
+            new_end = date_end
+
+            if triggered in ['init-trigger', 'app-data-store'] or date_start is None or date_end is None:
+                new_start, new_end = get_date_range_for_quick(7)
+            elif triggered == 'berth-quick-7d' and q7d is not None and q7d > 0:
+                new_start, new_end = get_date_range_for_quick(7)
+            elif triggered == 'berth-quick-30d' and q30d is not None and q30d > 0:
+                new_start, new_end = get_date_range_for_quick(30)
+            elif triggered == 'berth-quick-all' and qall is not None and qall > 0:
+                new_start, new_end = min_date, max_date
+
+            if new_start is None:
+                new_start, _ = get_date_range_for_quick(7)
+            if new_end is None:
+                _, new_end = get_date_range_for_quick(7)
+
+            start_dt = pd.Timestamp(new_start)
+            end_dt = pd.Timestamp(new_end) + timedelta(days=1)
+
+            conflicts_df, conflict_vessel_ids = _detect_berth_conflicts(vessel_df)
+
+            filtered_df = vessel_df[
+                (vessel_df['离港时间'] >= start_dt) &
+                (vessel_df['到港时间'] <= end_dt)
+            ].copy()
+
+            filtered_conflicts = conflicts_df.copy()
+            if not filtered_conflicts.empty:
+                filtered_conflicts['_start'] = pd.to_datetime(filtered_conflicts['重叠开始'])
+                filtered_conflicts['_end'] = pd.to_datetime(filtered_conflicts['重叠结束'])
+                filtered_conflicts = filtered_conflicts[
+                    (filtered_conflicts['_end'] >= start_dt) &
+                    (filtered_conflicts['_start'] <= end_dt)
+                ]
+                filtered_conflicts = filtered_conflicts.drop(columns=['_start', '_end'])
+            else:
+                filtered_conflicts = pd.DataFrame()
+
+            filtered_conflict_vessels = set()
+            if not filtered_conflicts.empty:
+                filtered_conflict_vessels = set(filtered_conflicts['船名A'].tolist() +
+                                                filtered_conflicts['船名B'].tolist())
+
+            gantt_fig = ChartBuilder.create_berth_gantt_chart(
+                vessel_df,
+                date_start=start_dt,
+                date_end=end_dt,
+                conflict_vessel_ids=filtered_conflict_vessels
+            )
+
+            if filtered_conflicts.empty:
+                conflict_summary = dbc.Alert(
+                    [html.I(className='fas fa-check-circle me-2'),
+                     '未检测到泊位冲突，调度正常'],
+                    color='success', className='mb-0'
+                )
+            else:
+                conflict_summary = dbc.Alert(
+                    [html.I(className='fas fa-exclamation-triangle me-2'),
+                     f'检测到 {len(filtered_conflicts)} 处泊位冲突，请及时处理！'],
+                    color='danger', className='mb-0'
+                )
+
+            efficiency_df = _calculate_berth_efficiency(filtered_df)
+            efficiency_fig = ChartBuilder.create_berth_efficiency_chart(efficiency_df)
+
+            conflict_data = filtered_conflicts.to_dict('records') if not filtered_conflicts.empty else []
+
+            _debug(f'泊位甘特图更新完成: {len(filtered_df)}条记录, {len(filtered_conflicts)}处冲突')
+            return (
+                new_start.isoformat() if hasattr(new_start, 'isoformat') else str(new_start),
+                new_end.isoformat() if hasattr(new_end, 'isoformat') else str(new_end),
+                gantt_fig,
+                conflict_summary,
+                conflict_data,
+                efficiency_fig
+            )
+
+        except Exception as e:
+            traceback.print_exc()
+            err_fig = empty_figure(f'甘特图生成失败: {str(e)[:50]}')
+            err_summary = dbc.Alert(f'错误: {str(e)[:80]}', color='danger')
+            return (date_start, date_end, err_fig, err_summary, [], empty_figure)

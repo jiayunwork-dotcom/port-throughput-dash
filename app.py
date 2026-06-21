@@ -64,6 +64,7 @@ def make_header():
     return dbc.NavbarSimple(
         children=[
             dbc.NavItem(dbc.NavLink('数据概览', href='#overview')),
+            dbc.NavItem(dbc.NavLink('泊位调度', href='#berth')),
             dbc.NavItem(dbc.NavLink('吞吐量预测', href='#forecast')),
             dbc.NavItem(dbc.NavLink('堆场分析', href='#yard')),
             dbc.NavItem(dbc.NavLink('翻箱率分析', href='#rehandling')),
@@ -195,6 +196,147 @@ def make_overview_section():
                 dcc.Graph(id='throughput-chart')
             ])
         ], className='mb-4')
+    ])
+
+
+def make_berth_section():
+    """创建泊位调度甘特图模块"""
+    return html.Div(id='berth', children=[
+        html.H3([html.I(className='fas fa-anchor me-2 text-primary'), '泊位调度甘特图'],
+                className='mt-5 mb-3 border-bottom pb-2'),
+
+        dbc.Card([
+            dbc.CardHeader([
+                html.I(className='fas fa-calendar-alt me-2'),
+                '时间范围选择'
+            ]),
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([
+                        html.Label('开始日期', className='fw-bold'),
+                        dcc.DatePickerSingle(
+                            id='berth-date-start',
+                            display_format='YYYY-MM-DD',
+                            className='form-control'
+                        ),
+                    ], md=3),
+                    dbc.Col([
+                        html.Label('结束日期', className='fw-bold'),
+                        dcc.DatePickerSingle(
+                            id='berth-date-end',
+                            display_format='YYYY-MM-DD',
+                            className='form-control'
+                        ),
+                    ], md=3),
+                    dbc.Col([
+                        html.Label('快捷选择', className='fw-bold'),
+                        html.Div([
+                            dbc.Button('最近7天', id='berth-quick-7d',
+                                       color='primary', outline=True, size='sm',
+                                       className='me-2'),
+                            dbc.Button('最近30天', id='berth-quick-30d',
+                                       color='primary', outline=True, size='sm',
+                                       className='me-2'),
+                            dbc.Button('全部', id='berth-quick-all',
+                                       color='primary', outline=True, size='sm'),
+                        ]),
+                    ], md=6, className='d-flex align-items-end'),
+                ]),
+            ])
+        ], className='mb-4'),
+
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-timeline me-2'),
+                        '泊位甘特图'
+                    ]),
+                    dbc.CardBody([
+                        html.Div([
+                            html.Small([
+                                html.Span(style={'display': 'inline-block', 'width': '12px', 'height': '12px',
+                                                'backgroundColor': '#90cdf4', 'marginRight': '4px',
+                                                'verticalAlign': 'middle'}),
+                                ' <2000TEU ',
+                                html.Span(style={'display': 'inline-block', 'width': '12px', 'height': '12px',
+                                                'backgroundColor': '#3182ce', 'marginRight': '4px',
+                                                'marginLeft': '12px', 'verticalAlign': 'middle'}),
+                                ' 2000-5000TEU ',
+                                html.Span(style={'display': 'inline-block', 'width': '12px', 'height': '12px',
+                                                'backgroundColor': '#1a365d', 'marginRight': '4px',
+                                                'marginLeft': '12px', 'verticalAlign': 'middle'}),
+                                ' >5000TEU ',
+                                html.Span(style={'display': 'inline-block', 'width': '12px', 'height': '12px',
+                                                'backgroundColor': '#e53e3e', 'marginRight': '4px',
+                                                'marginLeft': '12px', 'verticalAlign': 'middle'}),
+                                ' 冲突'
+                            ], className='text-muted')
+                        ], className='mb-2'),
+                        dcc.Graph(id='berth-gantt-chart')
+                    ])
+                ], className='mb-4'),
+
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-exclamation-triangle me-2 text-warning'),
+                        '泊位冲突检测'
+                    ]),
+                    dbc.CardBody([
+                        html.Div(id='berth-conflict-summary', className='mb-3'),
+                        dash_table.DataTable(
+                            id='berth-conflict-table',
+                            columns=[
+                                {'name': '泊位号', 'id': '泊位号'},
+                                {'name': '船名A', 'id': '船名A'},
+                                {'name': '船名B', 'id': '船名B'},
+                                {'name': '重叠开始', 'id': '重叠开始'},
+                                {'name': '重叠结束', 'id': '重叠结束'},
+                                {'name': '重叠时长(小时)', 'id': '重叠时长_小时',
+                                 'type': 'numeric', 'format': Format(precision=2, scheme=Scheme.fixed)},
+                            ],
+                            page_size=8,
+                            style_table={'overflowX': 'auto'},
+                            style_cell={'fontSize': '12px', 'padding': '8px'},
+                            style_header={'fontWeight': 'bold',
+                                          'backgroundColor': '#f8f9fa'},
+                            style_data_conditional=[
+                                {'if': {'row_index': 'odd'},
+                                 'backgroundColor': '#fff5f5'}
+                            ]
+                        )
+                    ])
+                ], className='mb-4'),
+            ], md=9),
+
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.I(className='fas fa-trophy me-2 text-warning'),
+                        '泊位效率排行'
+                    ]),
+                    dbc.CardBody([
+                        dcc.Graph(id='berth-efficiency-chart'),
+                        html.Hr(),
+                        html.H6('效率指标说明', className='fw-bold mb-2'),
+                        html.Small([
+                            html.Div([
+                                html.Span('● ', className='text-success'),
+                                '< 2小时：高效周转'
+                            ]),
+                            html.Div([
+                                html.Span('● ', className='text-primary'),
+                                '2-8小时：正常水平'
+                            ]),
+                            html.Div([
+                                html.Span('● ', className='text-danger'),
+                                '> 8小时：周转较慢'
+                            ]),
+                        ], className='text-muted'),
+                    ])
+                ], className='mb-4 h-100'),
+            ], md=3),
+        ], className='g-3'),
     ])
 
 
@@ -789,6 +931,7 @@ app.layout = html.Div([
     dbc.Container([
         make_data_upload_section(),
         make_overview_section(),
+        make_berth_section(),
         make_forecast_section(),
         make_yard_section(),
         make_rehandling_section(),

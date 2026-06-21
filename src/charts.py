@@ -512,3 +512,152 @@ class ChartBuilder:
         return cls._update_layout(fig,
             title='What-if情景分析关键指标对比',
             xlabel='模拟情景', ylabel='变化幅度 (%)', height=500)
+
+    @classmethod
+    def create_berth_gantt_chart(cls, vessel_df: pd.DataFrame,
+                                   date_start=None, date_end=None,
+                                   conflict_vessel_ids: set = None) -> go.Figure:
+        """创建泊位调度甘特图"""
+        if vessel_df is None or vessel_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text='暂无靠泊数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='泊位调度甘特图', height=500)
+
+        if conflict_vessel_ids is None:
+            conflict_vessel_ids = set()
+
+        df = vessel_df.copy()
+        df['到港时间'] = pd.to_datetime(df['到港时间'])
+        df['离港时间'] = pd.to_datetime(df['离港时间'])
+
+        if date_start is not None:
+            df = df[df['离港时间'] >= pd.to_datetime(date_start)]
+        if date_end is not None:
+            df = df[df['到港时间'] <= pd.to_datetime(date_end)]
+
+        if df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text='所选时段内无靠泊记录', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='泊位调度甘特图', height=500)
+
+        berths = sorted(df['分配泊位编号'].unique())
+
+        def get_color(teu, is_conflict=False):
+            if is_conflict:
+                return '#e53e3e'
+            if teu < 2000:
+                return '#90cdf4'
+            elif teu <= 5000:
+                return '#3182ce'
+            else:
+                return '#1a365d'
+
+        fig = go.Figure()
+
+        for berth_idx, berth in enumerate(berths):
+            berth_vessels = df[df['分配泊位编号'] == berth]
+            for _, row in berth_vessels.iterrows():
+                vessel_id = row.get('船名', '')
+                is_conflict = vessel_id in conflict_vessel_ids
+
+                hover_text = (
+                    f"<b>{row['船名']}</b><br>"
+                    f"泊位: {berth}<br>"
+                    f"到港: {row['到港时间'].strftime('%Y-%m-%d %H:%M')}<br>"
+                    f"离港: {row['离港时间'].strftime('%Y-%m-%d %H:%M')}<br>"
+                    f"载箱量: {row['载箱量TEU']:,} TEU<br>"
+                    f"靠泊时长: {(row['离港时间'] - row['到港时间']).total_seconds()/3600:.1f} 小时"
+                )
+                if is_conflict:
+                    hover_text += "<br><span style='color:red'>⚠️ 泊位冲突</span>"
+
+                fig.add_trace(go.Bar(
+                    x=[(row['离港时间'] - row['到港时间']).total_seconds() / 3600],
+                    y=[berth],
+                    base=[row['到港时间']],
+                    orientation='h',
+                    marker=dict(
+                        color=get_color(row['载箱量TEU'], is_conflict),
+                        line=dict(color='white', width=1)
+                    ),
+                    hovertemplate=hover_text,
+                    name=berth,
+                    showlegend=False,
+                    width=0.6
+                ))
+
+        fig.update_layout(
+            barmode='overlay',
+            xaxis=dict(
+                type='date',
+                title='时间',
+                showgrid=True,
+                gridcolor='#f0f0f0',
+                tickformat='%m-%d %H:%M',
+                tickangle=0
+            ),
+            yaxis=dict(
+                title='泊位',
+                showgrid=True,
+                gridcolor='#f0f0f0',
+                categoryorder='array',
+                categoryarray=list(reversed(berths))
+            ),
+            hovermode='closest'
+        )
+
+        if date_start is not None and date_end is not None:
+            fig.update_xaxes(range=[pd.to_datetime(date_start), pd.to_datetime(date_end)])
+
+        return cls._update_layout(fig,
+            title='泊位调度甘特图（按载箱量分色）',
+            xlabel='时间', ylabel='泊位编号', height=500,
+            showlegend=False)
+
+    @classmethod
+    def create_berth_efficiency_chart(cls, efficiency_df: pd.DataFrame) -> go.Figure:
+        """创建泊位效率排行横向条形图"""
+        if efficiency_df is None or efficiency_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text='暂无效率数据', xref='paper', yref='paper',
+                               x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+            return cls._update_layout(fig, title='泊位效率排行', height=400, showlegend=False)
+
+        df = efficiency_df.copy()
+        df = df.sort_values('平均周转时间_小时', ascending=True)
+
+        def get_bar_color(turnaround_hours):
+            if turnaround_hours < 2:
+                return '#38a169'
+            elif turnaround_hours > 8:
+                return '#e53e3e'
+            else:
+                return '#3182ce'
+
+        colors = [get_bar_color(t) for t in df['平均周转时间_小时']]
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df['平均周转时间_小时'],
+            y=df['泊位编号'],
+            orientation='h',
+            marker=dict(color=colors),
+            text=[f'{t:.2f} h' for t in df['平均周转时间_小时']],
+            textposition='outside',
+            hovertemplate=(
+                '<b>%{y}</b><br>'
+                '平均周转时间: %{x:.2f} 小时<br>'
+                '靠泊船次: %{customdata[0]} 艘<br>'
+                '累计装卸: %{customdata[1]:,} TEU'
+            ),
+            customdata=df[['靠泊船次', '累计装卸TEU']].values
+        ))
+
+        fig.update_yaxes(categoryorder='array', categoryarray=df['泊位编号'].tolist())
+
+        return cls._update_layout(fig,
+            title='泊位效率排行（按周转时间）',
+            xlabel='平均周转时间 (小时)', ylabel='泊位编号',
+            height=400, showlegend=False)
