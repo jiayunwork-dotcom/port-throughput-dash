@@ -1086,36 +1086,100 @@ def register_callbacks(app):
         return result_df
 
     # =============================================
-    # 回调10: 泊位调度甘特图 - 初始化日期 + 更新所有内容
+    # 辅助: 生成泊位效率卡片
+    # =============================================
+    def _render_efficiency_cards(efficiency_df):
+        """根据效率数据生成卡片列表"""
+        if efficiency_df is None or efficiency_df.empty:
+            return html.Div('暂无数据', className='text-muted text-center py-3')
+
+        cards = []
+        for idx, row in efficiency_df.iterrows():
+            berth = row['泊位编号']
+            turnaround = float(row['平均周转时间_小时'])
+            vessel_count = int(row['靠泊船次'])
+            total_teu = int(row['累计装卸TEU'])
+
+            if turnaround < 2:
+                card_color = 'success'
+                bg_style = {'backgroundColor': '#f0fff4', 'borderColor': '#38a169'}
+                text_color = 'text-success'
+            elif turnaround > 8:
+                card_color = 'danger'
+                bg_style = {'backgroundColor': '#fff5f5', 'borderColor': '#e53e3e'}
+                text_color = 'text-danger'
+            else:
+                card_color = 'primary'
+                bg_style = {'backgroundColor': '#ebf8ff', 'borderColor': '#3182ce'}
+                text_color = 'text-primary'
+
+            rank_icon = ''
+            if idx == 0:
+                rank_icon = html.I(className='fas fa-crown text-warning me-1')
+            elif idx == 1:
+                rank_icon = html.I(className='fas fa-medal text-secondary me-1')
+            elif idx == 2:
+                rank_icon = html.I(className='fas fa-award text-info me-1')
+
+            card = dbc.Card([
+                dbc.CardBody([
+                    html.H6([
+                        rank_icon,
+                        f'泊位 {berth}',
+                        dbc.Badge(f'第{idx+1}名', color=card_color,
+                                  className='float-end', pill=True)
+                    ], className=f'fw-bold {text_color} mb-3'),
+                    html.Div([
+                        html.Small('平均周转时间', className='text-muted d-block mb-1'),
+                        html.H4(f'{turnaround:.2f} h', className=f'fw-bold {text_color} mb-3')
+                    ]),
+                    html.Hr(className='my-2'),
+                    dbc.Row([
+                        dbc.Col([
+                            html.Small('靠泊船次', className='text-muted d-block'),
+                            html.Span(f'{vessel_count} 艘', className='fw-bold')
+                        ]),
+                        dbc.Col([
+                            html.Small('累计装卸', className='text-muted d-block'),
+                            html.Span(f'{total_teu:,} TEU', className='fw-bold')
+                        ]),
+                    ]),
+                ])
+            ], style=bg_style, className=f'mb-3 border-2 border-{card_color} shadow-sm')
+            cards.append(card)
+
+        return html.Div(cards)
+
+    # =============================================
+    # 回调10: 泊位调度甘特图 - 滑块 + 快捷按钮 + 所有内容
     # =============================================
     @app.callback(
-        Output('berth-date-start', 'date'),
-        Output('berth-date-end', 'date'),
+        Output('berth-date-slider', 'value'),
+        Output('berth-range-label', 'children'),
         Output('berth-gantt-chart', 'figure'),
         Output('berth-conflict-summary', 'children'),
         Output('berth-conflict-table', 'data'),
-        Output('berth-efficiency-chart', 'figure'),
+        Output('berth-efficiency-cards', 'children'),
         [Input('init-trigger', 'n_intervals'),
          Input('app-data-store', 'data'),
-         Input('berth-date-start', 'date'),
-         Input('berth-date-end', 'date'),
+         Input('berth-date-slider', 'value'),
          Input('berth-quick-7d', 'n_clicks'),
          Input('berth-quick-30d', 'n_clicks'),
          Input('berth-quick-all', 'n_clicks')],
         prevent_initial_call=False
     )
-    def update_berth_dashboard(n_intervals, store_data, date_start, date_end,
+    def update_berth_dashboard(n_intervals, store_data, slider_value,
                                 q7d, q30d, qall):
         """更新泊位调度甘特图及相关面板"""
-        _debug(f'update_berth_dashboard触发 init={S.is_initialized()}')
+        _debug(f'update_berth_dashboard触发 init={S.is_initialized()}, slider={slider_value}')
 
         ef_gantt = empty_figure('数据加载中...')
-        ef_eff = empty_figure('数据加载中...')
         empty_summary = html.Span('加载中...', className='text-muted')
         empty_data = []
+        empty_cards = html.Div('加载中...', className='text-muted text-center py-3')
 
         if not S.is_initialized():
-            return (None, None, ef_gantt, empty_summary, empty_data, ef_eff)
+            return ([0, 100], '数据加载中...', ef_gantt, empty_summary, empty_data, empty_cards)
 
         try:
             ctx = callback_context
@@ -1125,33 +1189,49 @@ def register_callbacks(app):
             vessel_df['到港时间'] = pd.to_datetime(vessel_df['到港时间'])
             vessel_df['离港时间'] = pd.to_datetime(vessel_df['离港时间'])
 
-            min_date = vessel_df['到港时间'].min().date()
-            max_date = vessel_df['离港时间'].max().date()
+            min_dt = vessel_df['到港时间'].min()
+            max_dt = vessel_df['离港时间'].max()
+            total_seconds = (max_dt - min_dt).total_seconds()
 
-            def get_date_range_for_quick(days):
-                end = pd.Timestamp(max_date)
-                start = end - timedelta(days=days - 1)
-                return start.date(), end.date()
+            def pct_to_dt(pct):
+                return min_dt + timedelta(seconds=total_seconds * pct / 100)
 
-            new_start = date_start
-            new_end = date_end
+            def dt_to_pct(dt):
+                return (dt - min_dt).total_seconds() / total_seconds * 100
 
-            if triggered in ['init-trigger', 'app-data-store'] or date_start is None or date_end is None:
-                new_start, new_end = get_date_range_for_quick(7)
+            def get_pct_range_for_quick(days):
+                end = max_dt
+                start = end - timedelta(days=days)
+                start_pct = max(0, dt_to_pct(start))
+                end_pct = 100
+                return [start_pct, end_pct]
+
+            new_slider = slider_value
+
+            if triggered in ['init-trigger', 'app-data-store']:
+                new_slider = get_pct_range_for_quick(7)
             elif triggered == 'berth-quick-7d' and q7d is not None and q7d > 0:
-                new_start, new_end = get_date_range_for_quick(7)
+                new_slider = get_pct_range_for_quick(7)
             elif triggered == 'berth-quick-30d' and q30d is not None and q30d > 0:
-                new_start, new_end = get_date_range_for_quick(30)
+                new_slider = get_pct_range_for_quick(30)
             elif triggered == 'berth-quick-all' and qall is not None and qall > 0:
-                new_start, new_end = min_date, max_date
+                new_slider = [0, 100]
 
-            if new_start is None:
-                new_start, _ = get_date_range_for_quick(7)
-            if new_end is None:
-                _, new_end = get_date_range_for_quick(7)
+            if new_slider is None or len(new_slider) != 2:
+                new_slider = [0, 100]
 
-            start_dt = pd.Timestamp(new_start)
-            end_dt = pd.Timestamp(new_end) + timedelta(days=1)
+            start_pct = max(0, min(100, new_slider[0]))
+            end_pct = max(0, min(100, new_slider[1]))
+            if end_pct < start_pct:
+                start_pct, end_pct = end_pct, start_pct
+
+            start_dt = pct_to_dt(start_pct)
+            end_dt = pct_to_dt(end_pct)
+
+            range_label = (
+                f'{start_dt.strftime("%Y-%m-%d %H:%M")}  ~  {end_dt.strftime("%Y-%m-%d %H:%M")}'
+                f'  (共 {(end_dt - start_dt).days}天{(end_dt - start_dt).seconds//3600}小时)'
+            )
 
             conflicts_df, conflict_vessel_ids = _detect_berth_conflicts(vessel_df)
 
@@ -1198,22 +1278,22 @@ def register_callbacks(app):
                 )
 
             efficiency_df = _calculate_berth_efficiency(filtered_df)
-            efficiency_fig = ChartBuilder.create_berth_efficiency_chart(efficiency_df)
+            efficiency_cards = _render_efficiency_cards(efficiency_df)
 
             conflict_data = filtered_conflicts.to_dict('records') if not filtered_conflicts.empty else []
 
             _debug(f'泊位甘特图更新完成: {len(filtered_df)}条记录, {len(filtered_conflicts)}处冲突')
             return (
-                new_start.isoformat() if hasattr(new_start, 'isoformat') else str(new_start),
-                new_end.isoformat() if hasattr(new_end, 'isoformat') else str(new_end),
+                [start_pct, end_pct],
+                range_label,
                 gantt_fig,
                 conflict_summary,
                 conflict_data,
-                efficiency_fig
+                efficiency_cards
             )
 
         except Exception as e:
             traceback.print_exc()
             err_fig = empty_figure(f'甘特图生成失败: {str(e)[:50]}')
             err_summary = dbc.Alert(f'错误: {str(e)[:80]}', color='danger')
-            return (date_start, date_end, err_fig, err_summary, [], empty_figure)
+            return (slider_value or [0, 100], '错误', err_fig, err_summary, [], empty_cards)

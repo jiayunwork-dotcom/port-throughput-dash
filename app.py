@@ -207,27 +207,25 @@ def make_berth_section():
 
         dbc.Card([
             dbc.CardHeader([
-                html.I(className='fas fa-calendar-alt me-2'),
+                html.I(className='fas fa-sliders-h me-2'),
                 '时间范围选择'
             ]),
             dbc.CardBody([
                 dbc.Row([
                     dbc.Col([
-                        html.Label('开始日期', className='fw-bold'),
-                        dcc.DatePickerSingle(
-                            id='berth-date-start',
-                            display_format='YYYY-MM-DD',
-                            className='form-control'
+                        html.Div(id='berth-range-label',
+                                 className='text-center fw-bold text-primary mb-2'),
+                        dcc.RangeSlider(
+                            id='berth-date-slider',
+                            min=0,
+                            max=100,
+                            value=[0, 100],
+                            step=1,
+                            allowCross=False,
+                            tooltip={'placement': 'bottom', 'always_visible': True},
+                            updatemode='drag'
                         ),
-                    ], md=3),
-                    dbc.Col([
-                        html.Label('结束日期', className='fw-bold'),
-                        dcc.DatePickerSingle(
-                            id='berth-date-end',
-                            display_format='YYYY-MM-DD',
-                            className='form-control'
-                        ),
-                    ], md=3),
+                    ], md=9),
                     dbc.Col([
                         html.Label('快捷选择', className='fw-bold'),
                         html.Div([
@@ -240,7 +238,7 @@ def make_berth_section():
                             dbc.Button('全部', id='berth-quick-all',
                                        color='primary', outline=True, size='sm'),
                         ]),
-                    ], md=6, className='d-flex align-items-end'),
+                    ], md=3, className='d-flex flex-column justify-content-end'),
                 ]),
             ])
         ], className='mb-4'),
@@ -316,7 +314,7 @@ def make_berth_section():
                         '泊位效率排行'
                     ]),
                     dbc.CardBody([
-                        dcc.Graph(id='berth-efficiency-chart'),
+                        html.Div(id='berth-efficiency-cards'),
                         html.Hr(),
                         html.H6('效率指标说明', className='fw-bold mb-2'),
                         html.Small([
