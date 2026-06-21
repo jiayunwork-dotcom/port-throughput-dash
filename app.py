@@ -931,11 +931,11 @@ def make_simulation_section():
                                 dcc.Dropdown(
                                     id='sim-strategy',
                                     options=[
-                                        {'label': '先到先服务 (FCFS)', 'value': 'FCFS'},
-                                        {'label': '最短作业优先 (SJF)', 'value': 'SJF'},
-                                        {'label': '最长等待优先 (LWF)', 'value': 'LWF'},
-                                        {'label': '三策略对比', 'value': 'ALL'},
-                                    ],
+                                    {'label': '先到先服务 (FCFS)', 'value': 'FCFS'},
+                                    {'label': '最短作业优先 (SJF)', 'value': 'SJF'},
+                                    {'label': '最长作业优先 (LWF)', 'value': 'LWF'},
+                                    {'label': '三策略对比', 'value': 'ALL'},
+                                ],
                                     value='FCFS',
                                     clearable=False,
                                     className='mb-2'

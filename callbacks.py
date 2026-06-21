@@ -1532,7 +1532,7 @@ def register_callbacks(app):
         strategy_names = {
             STRATEGY_FCFS: '先到先服务 (FCFS)',
             STRATEGY_SJF: '最短作业优先 (SJF)',
-            STRATEGY_LWF: '最长等待优先 (LWF)',
+            STRATEGY_LWF: '最长作业优先 (LWF)',
         }
         strategy_colors = {
             STRATEGY_FCFS: '#2b6cb0',

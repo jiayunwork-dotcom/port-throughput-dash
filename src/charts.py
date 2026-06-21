@@ -885,7 +885,7 @@ class ChartBuilder:
         strategy_names = {
             'FCFS': '先到先服务 (FCFS)',
             'SJF': '最短作业优先 (SJF)',
-            'LWF': '最长等待优先 (LWF)',
+            'LWF': '最长作业优先 (LWF)',
         }
 
         for strategy, result in results.items():

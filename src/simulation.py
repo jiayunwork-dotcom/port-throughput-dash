@@ -5,7 +5,7 @@
 支持三种泊位分配策略:
 - FCFS: 先到先服务 (First Come First Served)
 - SJF: 最短作业优先 (Shortest Job First)，预估装卸时间最短的船优先
-- LWF: 最长等待优先 (Longest Wait First)，等待时间最长的船优先
+- LWF: 最长作业优先 (Longest Job First)，预估装卸时间最长的船优先
 """
 
 import heapq
@@ -22,7 +22,7 @@ STRATEGY_ALL = 'ALL'
 STRATEGY_LABELS = {
     STRATEGY_FCFS: '先到先服务 (FCFS)',
     STRATEGY_SJF: '最短作业优先 (SJF)',
-    STRATEGY_LWF: '最长等待优先 (LWF)',
+    STRATEGY_LWF: '最长作业优先 (LWF)',
 }
 
 
@@ -295,13 +295,10 @@ class ShipQueueSimulator:
             inserted = False
             for i, sid in enumerate(anchor_queue):
                 q_ship = next((s for s in ships if s.ship_id == sid), None)
-                if q_ship:
-                    q_wait = current_time - q_ship.arrival_time
-                    s_wait = current_time - ship.arrival_time
-                    if s_wait > q_wait:
-                        anchor_queue.insert(i, ship.ship_id)
-                        inserted = True
-                        break
+                if q_ship and ship.estimated_service_time > q_ship.estimated_service_time:
+                    anchor_queue.insert(i, ship.ship_id)
+                    inserted = True
+                    break
             if not inserted:
                 anchor_queue.append(ship.ship_id)
         else:
@@ -329,14 +326,12 @@ class ShipQueueSimulator:
             return anchor_queue.pop(min_idx)
         elif strategy == STRATEGY_LWF:
             max_idx = 0
-            max_wait = -1
+            max_time = -1
             for i, sid in enumerate(anchor_queue):
                 q_ship = next((s for s in ships if s.ship_id == sid), None)
-                if q_ship:
-                    wait_t = current_time - q_ship.arrival_time
-                    if wait_t > max_wait:
-                        max_wait = wait_t
-                        max_idx = i
+                if q_ship and q_ship.estimated_service_time > max_time:
+                    max_time = q_ship.estimated_service_time
+                    max_idx = i
             return anchor_queue.pop(max_idx)
         else:
             return anchor_queue.pop(0)
